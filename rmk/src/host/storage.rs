@@ -1,77 +1,20 @@
 use embassy_time::Duration;
 use embedded_storage_async::nor_flash::NorFlash as AsyncNorFlash;
-use serde::de::{Error as DeError, SeqAccess, Visitor};
-use serde::{Deserializer, Serializer};
+use rmk_types::constants::MACRO_CHUNK_SIZE;
 
-use crate::MACRO_SPACE_SIZE;
 use crate::keyboard::combo::Combo;
 use crate::storage::{Storage, StorageKey, StorageValue, print_storage_error};
 
-pub(crate) mod macro_bytes_serde {
-    use super::*;
-
-    pub(crate) fn serialize<S>(value: &[u8; MACRO_SPACE_SIZE], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_bytes(value)
-    }
-
-    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; MACRO_SPACE_SIZE], D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct MacroBytesVisitor;
-
-        impl<'de> Visitor<'de> for MacroBytesVisitor {
-            type Value = [u8; MACRO_SPACE_SIZE];
-
-            fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                write!(formatter, "exactly {MACRO_SPACE_SIZE} bytes")
-            }
-
-            fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
-            where
-                E: DeError,
-            {
-                if value.len() != MACRO_SPACE_SIZE {
-                    return Err(E::invalid_length(value.len(), &self));
-                }
-
-                let mut bytes = [0u8; MACRO_SPACE_SIZE];
-                bytes.copy_from_slice(value);
-                Ok(bytes)
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: SeqAccess<'de>,
-            {
-                let mut bytes = [0u8; MACRO_SPACE_SIZE];
-                for (idx, slot) in bytes.iter_mut().enumerate() {
-                    *slot = seq
-                        .next_element()?
-                        .ok_or_else(|| A::Error::invalid_length(idx, &self))?;
-                }
-
-                if (seq.next_element::<u8>()?).is_some() {
-                    return Err(A::Error::invalid_length(MACRO_SPACE_SIZE + 1, &self));
-                }
-
-                Ok(bytes)
-            }
-        }
-
-        deserializer.deserialize_bytes(MacroBytesVisitor)
-    }
-}
-
-impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize>
-    Storage<F, ROW, COL, NUM_LAYER, NUM_ENCODER>
-{
-    pub(crate) async fn read_keymap(
+impl<F: AsyncNorFlash> Storage<F> {
+    pub(crate) async fn read_layout<
+        const ROW: usize,
+        const COL: usize,
+        const NUM_LAYER: usize,
+        const NUM_ENCODER: usize,
+        const NUM_TOUCHPAD: usize,
+    >(
         &mut self,
-        data: &mut crate::keymap::KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER>,
+        data: &mut crate::keymap::KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER, NUM_TOUCHPAD>,
         behavior: &mut crate::config::BehaviorConfig,
     ) -> Result<(), ()> {
         // Use fetch_all_items to speed up the keymap reading
@@ -107,6 +50,12 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                 (StorageKey::DefaultLayer, StorageValue::DefaultLayer(layer)) => behavior.default_layer = layer,
                 // Restore the VIA/Vial layout options selection
                 (StorageKey::LayoutOption, StorageValue::LayoutOption(option)) => data.layout_option = option,
+                (StorageKey::MacroChunk(idx), StorageValue::MacroChunk(bytes)) => {
+                    if let Some(chunk) = data.macros.as_chunks_mut::<MACRO_CHUNK_SIZE>().0.get_mut(idx as usize) {
+                        *chunk = bytes;
+                        data.macros_stored = true;
+                    }
+                }
                 (StorageKey::BehaviorConfig, StorageValue::BehaviorConfig(c)) => {
                     behavior.morse.prior_idle_time = Duration::from_millis(c.prior_idle_time as u64);
                     behavior.morse.default_profile = c.morse_default_profile;
@@ -114,9 +63,6 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                     behavior.one_shot.timeout = Duration::from_millis(c.one_shot_timeout as u64);
                     behavior.tap.tap_interval = c.tap_interval;
                     behavior.tap.tap_capslock_interval = c.tap_capslock_interval;
-                }
-                (StorageKey::MacroData, StorageValue::MacroData(bytes)) => {
-                    behavior.keyboard_macros.macro_sequences = bytes;
                 }
                 (StorageKey::Combo(idx), StorageValue::Combo(config)) => {
                     if let Some(slot) = behavior.combo.combos.get_mut(idx as usize) {

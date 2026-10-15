@@ -1,7 +1,7 @@
 use core::cell::RefCell;
 
 use embassy_time::Duration;
-use rmk_types::action::{EncoderAction, KeyAction};
+use rmk_types::action::{EncoderAction, KeyAction, TouchAction, TouchGesture};
 use rmk_types::fork::Fork;
 use rmk_types::morse::{Morse, MorseProfile};
 #[cfg(all(feature = "storage", feature = "host"))]
@@ -10,31 +10,46 @@ use {
     embedded_storage_async::nor_flash::NorFlash,
 };
 
-use crate::MACRO_SPACE_SIZE;
 use crate::config::{BehaviorConfig, Hand, MouseKeyConfig, OneShotModifiersConfig, PositionalConfig};
 use crate::event::{KeyboardEvent, KeyboardEventPos, LayerChangeEvent, publish_event};
 use crate::input_device::rotary_encoder::Direction;
 use crate::keyboard::combo::Combo;
-use crate::keyboard_macros::MacroOperation;
+use crate::keyboard::macros::Macros;
 #[cfg(feature = "host_lock")]
 use crate::matrix::MatrixState;
 
 pub(crate) const HOLD_BUFFER_SIZE: usize = 16;
 
 /// All allocated data needed to build a [`KeyMap`].
-pub struct KeymapData<const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize = 0> {
+pub struct KeymapData<
+    const ROW: usize,
+    const COL: usize,
+    const NUM_LAYER: usize,
+    const NUM_ENCODER: usize = 0,
+    const NUM_TOUCHPAD: usize = 0,
+> {
     /// Per-layer key actions
     pub(crate) keymap: [[[KeyAction; COL]; ROW]; NUM_LAYER],
     /// Per-layer encoder actions
     pub(crate) encoder_map: [[EncoderAction; NUM_ENCODER]; NUM_LAYER],
+    /// Per-layer touchpad gesture actions
+    pub(crate) touch_map: [[TouchAction; NUM_TOUCHPAD]; NUM_LAYER],
     /// Per-layer activation flags
     layer_state: [bool; NUM_LAYER],
     /// Layer cache for key positions
     layer_cache: [[u8; COL]; ROW],
     /// Layer cache for encoder directions
     encoder_layer_cache: [[u8; 2]; NUM_ENCODER],
+    /// Layer cache for touchpad gestures
+    touch_layer_cache: [[u8; TouchGesture::COUNT]; NUM_TOUCHPAD],
     /// VIA/Vial layout options; persisted via `LayoutOption`
     pub(crate) layout_option: u32,
+    /// The macro buffer, see [`crate::keyboard::macros`].
+    #[cfg(feature = "host")]
+    pub(crate) macros: [u8; crate::MACRO_SPACE_SIZE],
+    /// Whether flash holds the buffer; otherwise it is seeded from the defaults.
+    #[cfg(feature = "host")]
+    pub(crate) macros_stored: bool,
 }
 
 impl<const ROW: usize, const COL: usize, const NUM_LAYER: usize> KeymapData<ROW, COL, NUM_LAYER, 0> {
@@ -43,10 +58,16 @@ impl<const ROW: usize, const COL: usize, const NUM_LAYER: usize> KeymapData<ROW,
         Self {
             keymap,
             encoder_map: [const { [] }; NUM_LAYER],
+            touch_map: [const { [] }; NUM_LAYER],
             layer_state: [false; NUM_LAYER],
             layer_cache: [[0; COL]; ROW],
             encoder_layer_cache: [],
+            touch_layer_cache: [],
             layout_option: 0,
+            #[cfg(feature = "host")]
+            macros: [0; crate::MACRO_SPACE_SIZE],
+            #[cfg(feature = "host")]
+            macros_stored: false,
         }
     }
 }
@@ -62,10 +83,41 @@ impl<const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCOD
         Self {
             keymap,
             encoder_map,
+            touch_map: [const { [] }; NUM_LAYER],
             layer_state: [false; NUM_LAYER],
             layer_cache: [[0; COL]; ROW],
             encoder_layer_cache: [[0u8; 2]; NUM_ENCODER],
+            touch_layer_cache: [],
             layout_option: 0,
+            #[cfg(feature = "host")]
+            macros: [0; crate::MACRO_SPACE_SIZE],
+            #[cfg(feature = "host")]
+            macros_stored: false,
+        }
+    }
+}
+
+impl<const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize>
+    KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER>
+{
+    /// Add the touch map of a keyboard with touchpads.
+    pub const fn with_touch<const NUM_TOUCHPAD: usize>(
+        self,
+        touch_map: [[TouchAction; NUM_TOUCHPAD]; NUM_LAYER],
+    ) -> KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER, NUM_TOUCHPAD> {
+        KeymapData {
+            keymap: self.keymap,
+            encoder_map: self.encoder_map,
+            touch_map,
+            layer_state: self.layer_state,
+            layer_cache: self.layer_cache,
+            encoder_layer_cache: self.encoder_layer_cache,
+            touch_layer_cache: [[0u8; TouchGesture::COUNT]; NUM_TOUCHPAD],
+            layout_option: self.layout_option,
+            #[cfg(feature = "host")]
+            macros: self.macros,
+            #[cfg(feature = "host")]
+            macros_stored: self.macros_stored,
         }
     }
 }
@@ -90,16 +142,21 @@ struct KeyMapInner<'a> {
     col: usize,
     num_layer: usize,
     num_encoder: usize,
+    num_touchpad: usize,
     /// Flat layer data: num_layer * row * col
     layers: &'a mut [KeyAction],
     /// Flat encoder data: num_layer * num_encoder (None if no encoders)
     encoders: Option<&'a mut [EncoderAction]>,
+    /// Flat touchpad data: num_layer * num_touchpad
+    touchpads: &'a mut [TouchAction],
     /// Per-layer activation state
     layer_state: &'a mut [bool],
     /// Layer cache for keys: row * col
     layer_cache: &'a mut [u8],
     /// Layer cache for encoders: num_encoder * 2
     encoder_layer_cache: &'a mut [u8],
+    /// Layer cache for touchpad gestures: num_touchpad * TouchGesture::COUNT
+    touch_layer_cache: &'a mut [u8],
     /// Behavior configuration
     behavior: &'a mut BehaviorConfig,
     /// Hand info: row * col (read-only)
@@ -108,6 +165,7 @@ struct KeyMapInner<'a> {
     mouse_buttons: u8,
     /// VIA/Vial layout options; persisted via `LayoutOption`
     layout_option: u32,
+    macros: Macros<'a>,
     /// Matrix state for vial lock
     #[cfg(feature = "host_lock")]
     matrix_state: MatrixState,
@@ -132,6 +190,16 @@ impl KeyMapInner<'_> {
     #[inline]
     fn encoder_cache_index(&self, id: usize, direction: usize) -> usize {
         id * 2 + direction
+    }
+
+    #[inline]
+    fn touch_index(&self, layer: usize, id: usize) -> usize {
+        layer * self.num_touchpad + id
+    }
+
+    #[inline]
+    fn touch_cache_index(&self, id: usize, gesture: TouchGesture) -> usize {
+        id * TouchGesture::COUNT + gesture as usize
     }
 }
 
@@ -189,6 +257,13 @@ impl KeyMapInner<'_> {
                 }
                 KeyAction::No
             }
+            KeyboardEventPos::Touch(touch_pos) => {
+                let id = touch_pos.id as usize;
+                if id >= self.num_touchpad || layer_num >= self.num_layer {
+                    return KeyAction::No;
+                }
+                self.touchpads[self.touch_index(layer_num, id)].get(touch_pos.gesture)
+            }
             KeyboardEventPos::Combo(_) | KeyboardEventPos::Macro | KeyboardEventPos::Virtual(_) => KeyAction::No,
         }
     }
@@ -217,13 +292,16 @@ impl KeyMapInner<'_> {
                     }
                 }
             }
-            KeyboardEventPos::Combo(_) | KeyboardEventPos::Macro | KeyboardEventPos::Virtual(_) => {}
+            KeyboardEventPos::Touch(_)
+            | KeyboardEventPos::Combo(_)
+            | KeyboardEventPos::Macro
+            | KeyboardEventPos::Virtual(_) => {}
         }
     }
 
     fn get_action_with_layer_cache(&mut self, event: KeyboardEvent) -> KeyAction {
         if !event.pressed {
-            let layer = self.pop_layer_from_cache(event.pos);
+            let layer = self.replace_layer_cache(event.pos, self.behavior.default_layer);
             return self.get_action_at(event.pos, layer as usize);
         }
 
@@ -233,7 +311,7 @@ impl KeyMapInner<'_> {
                 if action == KeyAction::Transparent {
                     continue;
                 }
-                self.save_layer_cache(event.pos, layer_idx as u8);
+                self.replace_layer_cache(event.pos, layer_idx as u8);
                 return action;
             }
             if layer_idx as u8 == self.behavior.default_layer {
@@ -242,7 +320,7 @@ impl KeyMapInner<'_> {
         }
 
         // Keep release on the same transparent default-layer action as press.
-        self.save_layer_cache(event.pos, self.behavior.default_layer);
+        self.replace_layer_cache(event.pos, self.behavior.default_layer);
         KeyAction::No
     }
 
@@ -255,52 +333,27 @@ impl KeyMapInner<'_> {
         self.behavior.default_layer
     }
 
-    fn pop_layer_from_cache(&mut self, pos: KeyboardEventPos) -> u8 {
-        match pos {
+    fn replace_layer_cache(&mut self, pos: KeyboardEventPos, layer: u8) -> u8 {
+        let default_layer = self.behavior.default_layer;
+        let cache = match pos {
             KeyboardEventPos::Key(key_pos) => {
                 let ci = self.cache_index(key_pos.row as usize, key_pos.col as usize);
-                if let Some(cache) = self.layer_cache.get_mut(ci) {
-                    let layer = *cache;
-                    *cache = self.behavior.default_layer;
-                    return layer;
-                }
-                self.behavior.default_layer
+                self.layer_cache.get_mut(ci)
             }
-            KeyboardEventPos::RotaryEncoder(encoder_pos) => {
-                if encoder_pos.direction != Direction::None {
-                    let ci = self.encoder_cache_index(encoder_pos.id as usize, encoder_pos.direction as usize);
-                    if let Some(cache) = self.encoder_layer_cache.get_mut(ci) {
-                        let layer = *cache;
-                        *cache = self.behavior.default_layer;
-                        return layer;
-                    }
-                }
-                self.behavior.default_layer
+            KeyboardEventPos::RotaryEncoder(encoder_pos) if encoder_pos.direction != Direction::None => {
+                let ci = self.encoder_cache_index(encoder_pos.id as usize, encoder_pos.direction as usize);
+                self.encoder_layer_cache.get_mut(ci)
             }
-            KeyboardEventPos::Combo(_) | KeyboardEventPos::Macro | KeyboardEventPos::Virtual(_) => {
-                self.behavior.default_layer
+            KeyboardEventPos::Touch(touch_pos) => {
+                let ci = self.touch_cache_index(touch_pos.id as usize, touch_pos.gesture);
+                self.touch_layer_cache.get_mut(ci)
             }
-        }
-    }
-
-    fn save_layer_cache(&mut self, pos: KeyboardEventPos, layer_num: u8) {
-        match pos {
-            KeyboardEventPos::Key(key_pos) => {
-                let ci = self.cache_index(key_pos.row as usize, key_pos.col as usize);
-                if let Some(cache) = self.layer_cache.get_mut(ci) {
-                    *cache = layer_num;
-                }
-            }
-            KeyboardEventPos::RotaryEncoder(encoder_pos) => {
-                if encoder_pos.direction != Direction::None {
-                    let ci = self.encoder_cache_index(encoder_pos.id as usize, encoder_pos.direction as usize);
-                    if let Some(cache) = self.encoder_layer_cache.get_mut(ci) {
-                        *cache = layer_num;
-                    }
-                }
-            }
-            KeyboardEventPos::Combo(_) | KeyboardEventPos::Macro | KeyboardEventPos::Virtual(_) => {}
-        }
+            KeyboardEventPos::RotaryEncoder(_)
+            | KeyboardEventPos::Combo(_)
+            | KeyboardEventPos::Macro
+            | KeyboardEventPos::Virtual(_) => None,
+        };
+        cache.map_or(default_layer, |cache| core::mem::replace(cache, layer))
     }
 
     fn update_fn_layer_state(&mut self) {
@@ -364,8 +417,14 @@ impl<'a> KeyMap<'a> {
     ///
     /// This is the shared construction logic used by both `new` and `new_from_storage`.
     /// Uses `as_flattened_mut()` / `as_flattened()` (Rust 1.85+, no unsafe).
-    fn build<const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize>(
-        data: &'a mut KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER>,
+    fn build<
+        const ROW: usize,
+        const COL: usize,
+        const NUM_LAYER: usize,
+        const NUM_ENCODER: usize,
+        const NUM_TOUCHPAD: usize,
+    >(
+        data: &'a mut KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER, NUM_TOUCHPAD>,
         behavior: &'a mut BehaviorConfig,
         positional_config: &'a PositionalConfig<ROW, COL>,
     ) -> Self {
@@ -378,7 +437,13 @@ impl<'a> KeyMap<'a> {
         let layer_state = &mut data.layer_state;
         let layer_cache = data.layer_cache.as_mut_slice().as_flattened_mut();
         let encoder_layer_cache = data.encoder_layer_cache.as_mut_slice().as_flattened_mut();
+        let touchpads = data.touch_map.as_mut_slice().as_flattened_mut();
+        let touch_layer_cache = data.touch_layer_cache.as_mut_slice().as_flattened_mut();
         let hand = positional_config.hand.as_slice().as_flattened();
+        #[cfg(feature = "host")]
+        let macros = Macros::new(behavior.keyboard_macros, &mut data.macros, data.macros_stored);
+        #[cfg(not(feature = "host"))]
+        let macros = Macros::new(behavior.keyboard_macros, &mut [], false);
 
         KeyMap {
             inner: RefCell::new(KeyMapInner {
@@ -386,15 +451,19 @@ impl<'a> KeyMap<'a> {
                 col: COL,
                 num_layer: NUM_LAYER,
                 num_encoder: NUM_ENCODER,
+                num_touchpad: NUM_TOUCHPAD,
                 layers,
                 encoders,
+                touchpads,
                 layer_state,
                 layer_cache,
                 encoder_layer_cache,
+                touch_layer_cache,
                 behavior,
                 hand,
                 mouse_buttons: 0,
                 layout_option: data.layout_option,
+                macros,
                 #[cfg(feature = "host_lock")]
                 matrix_state: MatrixState::new(ROW, COL),
             }),
@@ -402,8 +471,14 @@ impl<'a> KeyMap<'a> {
     }
 
     /// Generic constructor — const generics stop here.
-    pub async fn new<const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize>(
-        data: &'a mut KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER>,
+    pub async fn new<
+        const ROW: usize,
+        const COL: usize,
+        const NUM_LAYER: usize,
+        const NUM_ENCODER: usize,
+        const NUM_TOUCHPAD: usize,
+    >(
+        data: &'a mut KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER, NUM_TOUCHPAD>,
         behavior: &'a mut BehaviorConfig,
         positional_config: &'a PositionalConfig<ROW, COL>,
     ) -> Self {
@@ -419,9 +494,10 @@ impl<'a> KeyMap<'a> {
         const COL: usize,
         const NUM_LAYER: usize,
         const NUM_ENCODER: usize,
+        const NUM_TOUCHPAD: usize,
     >(
-        data: &'a mut KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER>,
-        storage: Option<&mut Storage<F, ROW, COL, NUM_LAYER, NUM_ENCODER>>,
+        data: &'a mut KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER, NUM_TOUCHPAD>,
+        storage: Option<&mut Storage<F>>,
         behavior: &'a mut BehaviorConfig,
         positional_config: &'a PositionalConfig<ROW, COL>,
     ) -> Self {
@@ -433,7 +509,7 @@ impl<'a> KeyMap<'a> {
             if storage.clear_layout {
                 debug!("`clear_layout` is set, rewriting the items the compiled-in layout owns.");
                 storage.write_layout(data, behavior).await;
-            } else if storage.read_keymap(data, behavior).await.is_err() {
+            } else if storage.read_layout(data, behavior).await.is_err() {
                 error!("Failed to read from storage, clearing...");
                 storage.flash.erase_all().await.ok();
                 reboot_keyboard();
@@ -484,10 +560,7 @@ impl<'a> KeyMap<'a> {
         self.inner.borrow_mut().toggle_layer(layer_num);
     }
 
-    // FORK PATCH (Iemooon/rmk, branch `cck-dynamic-layers`, based on f12257e8):
-    // this and the two methods below were `pub(crate)`. cck-rmk runs its own
-    // auto-mouse-layer processor whose target layer is read from the keymap at
-    // runtime, so it needs them public. Nothing else is changed.
+    // CCK processors manage their mouse layer using the live keymap.
     /// Activate `layer_num` only if it is currently inactive.
     ///
     /// Returns `true` if this call performed the activation, `false` if the
@@ -698,16 +771,8 @@ impl<'a> KeyMap<'a> {
         f(&mut inner.behavior.combo.combos)
     }
 
-    pub(crate) fn get_macro_sequence_start(&self, idx: u8) -> Option<usize> {
-        MacroOperation::get_macro_sequence_start(&self.inner.borrow().behavior.keyboard_macros.macro_sequences, idx)
-    }
-
-    pub(crate) fn get_next_macro_operation(&self, start: usize, offset: usize) -> (MacroOperation, usize) {
-        MacroOperation::get_next_macro_operation(
-            &self.inner.borrow().behavior.keyboard_macros.macro_sequences,
-            start,
-            offset,
-        )
+    pub(crate) fn macros<R>(&self, f: impl FnOnce(&mut Macros<'a>) -> R) -> R {
+        f(&mut self.inner.borrow_mut().macros)
     }
 
     pub(crate) fn mouse_buttons(&self) -> u8 {
@@ -780,32 +845,6 @@ impl<'a> KeyMap<'a> {
             return true;
         }
         false
-    }
-
-    pub(crate) fn read_macro_buffer(&self, offset: usize, target: &mut [u8]) {
-        let inner = self.inner.borrow();
-        let src = &inner.behavior.keyboard_macros.macro_sequences;
-        let end = (offset + target.len()).min(src.len());
-        if offset < end {
-            target[..end - offset].copy_from_slice(&src[offset..end]);
-        }
-    }
-
-    pub(crate) fn write_macro_buffer(&self, offset: usize, data: &[u8]) {
-        let mut inner = self.inner.borrow_mut();
-        let dst = &mut inner.behavior.keyboard_macros.macro_sequences;
-        let end = (offset + data.len()).min(dst.len());
-        if offset < end {
-            dst[offset..end].copy_from_slice(&data[..end - offset]);
-        }
-    }
-
-    pub(crate) fn reset_macro_buffer(&self) {
-        self.inner.borrow_mut().behavior.keyboard_macros.macro_sequences = [0; MACRO_SPACE_SIZE];
-    }
-
-    pub(crate) fn get_macro_sequences(&self) -> [u8; MACRO_SPACE_SIZE] {
-        self.inner.borrow().behavior.keyboard_macros.macro_sequences
     }
 
     #[cfg(feature = "host_lock")]

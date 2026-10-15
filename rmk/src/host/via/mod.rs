@@ -9,7 +9,7 @@ use crate::hid::ViaReport;
 use crate::host::context::KeyboardContext;
 use crate::host::via::keycode_convert::{from_via_keycode, to_via_keycode};
 use crate::keymap::KeyMap;
-use crate::{MACRO_SPACE_SIZE, boot};
+use crate::{MACRO_MAX_NUM, MACRO_SPACE_SIZE, boot};
 
 pub(crate) mod keycode_convert;
 mod vial;
@@ -147,50 +147,63 @@ impl<'a> VialService<'a> {
                 boot::jump_to_bootloader();
             }
             ViaCommand::DynamicKeymapMacroGetCount => {
-                report.input_data[1] = 32;
-                warn!("Macro get count -- to be implemented")
+                report.input_data[1] = MACRO_MAX_NUM as u8;
             }
             ViaCommand::DynamicKeymapMacroGetBufferSize => {
-                report.input_data[1] = (MACRO_SPACE_SIZE as u16 >> 8) as u8;
-                report.input_data[2] = (MACRO_SPACE_SIZE & 0xFF) as u8;
+                BigEndian::write_u16(&mut report.input_data[1..3], MACRO_SPACE_SIZE as u16);
             }
             ViaCommand::DynamicKeymapMacroGetBuffer => {
                 let offset = BigEndian::read_u16(&report.output_data[1..3]) as usize;
                 let size = report.output_data[3] as usize;
+                // The payload is `[4..4 + size]` of a 32-byte report.
                 if size <= 28 {
-                    self.ctx.read_macro_buffer(offset, &mut report.input_data[4..4 + size]);
-                    debug!("Get macro buffer: offset: {}, data: {:?}", offset, report.input_data);
+                    let out = &mut report.input_data[4..4 + size];
+                    self.ctx.keymap.macros(|m| {
+                        let bytes = m.bytes().get(offset..).unwrap_or(&[]);
+                        let n = bytes.len().min(size);
+                        out[..n].copy_from_slice(&bytes[..n]);
+                        out[n..].fill(0);
+                    });
                 } else {
                     report.input_data[0] = 0xFF;
                 }
             }
             ViaCommand::DynamicKeymapMacroSetBuffer => {
-                // Every write writes all buffer space of the macro(if it's not empty)
-                let offset = BigEndian::read_u16(&report.output_data[1..3]);
-                // Current sequence size, <= 28
-                let size = report.output_data[3];
-                // `output_data` is 32 bytes, so the payload slice output_data[4..4 + size]
-                // is only valid for size <= 28. Reject oversized writes instead of
-                // panicking, mirroring the DynamicKeymapMacroGetBuffer handler above.
+                let offset = BigEndian::read_u16(&report.output_data[1..3]) as usize;
+                let size = report.output_data[3] as usize;
                 if size <= 28 {
-                    // End of current sequence in the macro cache
-                    // The first sequence, reset the macro cache
-                    if offset == 0 {
-                        self.ctx.reset_macro_buffer();
-                    }
-
-                    // Update macro cache + flush full buffer to storage
-                    info!("Setting macro buffer, offset: {}, size: {}", offset, size);
-                    let _ = self
+                    let changed = self
                         .ctx
-                        .write_macro_buffer(offset as usize, &report.output_data[4..4 + size as usize])
-                        .await;
+                        .keymap
+                        .macros(|m| m.write(offset, &report.output_data[4..4 + size]));
+                    #[cfg(feature = "storage")]
+                    if crate::keyboard::macros::persist(self.ctx.keymap, changed)
+                        .await
+                        .is_err()
+                    {
+                        error!("Failed to save the macros");
+                    }
+                    #[cfg(not(feature = "storage"))]
+                    if !changed.is_empty() {
+                        warn!("Macros changed but not saved: there is no storage");
+                    }
                 } else {
                     report.input_data[0] = 0xFF;
                 }
             }
             ViaCommand::DynamicKeymapMacroReset => {
-                warn!("Macro reset -- to be implemented")
+                let changed = self.ctx.keymap.macros(|m| m.clear());
+                #[cfg(feature = "storage")]
+                if crate::keyboard::macros::persist(self.ctx.keymap, changed)
+                    .await
+                    .is_err()
+                {
+                    error!("Failed to save the macros");
+                }
+                #[cfg(not(feature = "storage"))]
+                if !changed.is_empty() {
+                    warn!("Macros changed but not saved: there is no storage");
+                }
             }
             ViaCommand::DynamicKeymapGetLayerCount => {
                 report.input_data[1] = self.ctx.keymap_dimensions().2 as u8;

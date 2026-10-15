@@ -60,3 +60,5 @@ dfu_split = []
 dfu_lock = []
 # Stenography (Plover HID) support: `StenoKey` + `Action::Steno` variant.
 steno = []
+# Vial edits the macros: size the compiled-in defaults in Vial's encoding.
+vial = []

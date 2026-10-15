@@ -8,10 +8,10 @@
 //! Lives in the test crate, so it drives only rmk's public API (plus the
 //! `#[doc(hidden)]` `rmk::test_support` gate for a few internal signals).
 
-/// Geometry of the simulated flash part: 4 KiB in 256-byte sectors, written 4
-/// bytes at a time.
+/// Geometry of the simulated flash part: 4 KiB in 1 KiB sectors, a sector
+/// holding every chunk of the macro buffer, written 4 bytes at a time.
 #[cfg(feature = "storage")]
-pub type Flash = rmk::test_support::InMemoryFlash<4096, 256, 4>;
+pub type Flash = rmk::test_support::InMemoryFlash<4096, 1024, 4>;
 
 use core::future::Future;
 use core::pin::Pin;
@@ -625,6 +625,7 @@ fn input(pos: KeyboardEventPos) -> String {
     match pos {
         KeyboardEventPos::Key(key) => format!("key [{}, {}]", key.row, key.col),
         KeyboardEventPos::RotaryEncoder(pos) => format!("encoder {} {:?}", pos.id, pos.direction),
+        KeyboardEventPos::Touch(pos) => format!("touchpad {} {:?}", pos.id, pos.gesture),
         KeyboardEventPos::Combo(idx) => format!("combo {idx}"),
         KeyboardEventPos::Macro => "macro".to_string(),
         KeyboardEventPos::Virtual(idx) => format!("virtual {idx}"),

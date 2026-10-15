@@ -11,7 +11,6 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use embassy_time::{Duration, MockDriver};
 
 pub const COMBO_MAX_LENGTH: usize = crate::COMBO_MAX_LENGTH;
-pub const MACRO_SPACE_SIZE: usize = crate::MACRO_SPACE_SIZE;
 
 #[cfg(feature = "vial")]
 pub fn to_via_keycode(action: rmk_types::action::KeyAction) -> u16 {
@@ -128,6 +127,7 @@ pub async fn drain_ble_profile_channel(sink: &mut std::vec::Vec<std::string::Str
 pub struct InMemoryFlash<const SIZE: usize, const ERASE: usize, const WRITE: usize> {
     data: std::rc::Rc<core::cell::RefCell<[u8; SIZE]>>,
     fail_writes: std::rc::Rc<core::cell::Cell<bool>>,
+    writes: std::rc::Rc<core::cell::Cell<usize>>,
 }
 
 #[cfg(feature = "storage")]
@@ -136,7 +136,13 @@ impl<const SIZE: usize, const ERASE: usize, const WRITE: usize> InMemoryFlash<SI
         Self {
             data: std::rc::Rc::new(core::cell::RefCell::new([0xFF; SIZE])),
             fail_writes: std::rc::Rc::new(core::cell::Cell::new(false)),
+            writes: std::rc::Rc::new(core::cell::Cell::new(0)),
         }
+    }
+
+    /// How many writes have landed, shared by every clone.
+    pub fn writes(&self) -> usize {
+        self.writes.get()
     }
 
     /// Reject every write while set, shared by every clone — the stand-in for a
@@ -205,6 +211,7 @@ impl<const SIZE: usize, const ERASE: usize, const WRITE: usize> embedded_storage
             }
             *current &= *byte;
         }
+        self.writes.set(self.writes.get() + 1);
         Ok(())
     }
 }

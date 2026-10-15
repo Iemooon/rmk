@@ -6,7 +6,8 @@
 //! - Pointing device events (mouse, trackball, etc.)
 
 use postcard::experimental::max_size::MaxSize;
-use rmk_macro::event;
+use rmk_macro::{Event, event};
+use rmk_types::action::TouchGesture;
 use rmk_types::modifier::ModifierCombination;
 use serde::{Deserialize, Serialize};
 
@@ -58,13 +59,16 @@ impl KeyboardEvent {
 
 /// The position of the keyboard event.
 ///
-/// A physical position is a key (row, col) or a rotary encoder (id, direction).
+/// A physical position is a key (row, col), a rotary encoder (id, direction) or a
+/// touchpad gesture (id, gesture).
 /// A synthesized position names the behavior that produced the event.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, MaxSize, Eq, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum KeyboardEventPos {
     Key(KeyPos),
     RotaryEncoder(RotaryEncoderPos),
+    /// A gesture on a touchpad.
+    Touch(TouchPos),
     /// Output of the combo at this index.
     Combo(u8),
     /// A macro op. A macro's keys belong to no macro in particular.
@@ -74,9 +78,10 @@ pub enum KeyboardEventPos {
 }
 
 impl KeyboardEventPos {
-    /// A key or encoder the user pressed, as opposed to a behavior's synthesized output.
+    /// A key, encoder or touchpad gesture the user made, as opposed to a behavior's
+    /// synthesized output.
     pub(crate) fn is_physical(self) -> bool {
-        matches!(self, Self::Key(_) | Self::RotaryEncoder(_))
+        matches!(self, Self::Key(_) | Self::RotaryEncoder(_) | Self::Touch(_))
     }
 
     pub(crate) fn key_pos(col: u8, row: u8) -> Self {
@@ -103,6 +108,15 @@ pub struct RotaryEncoderPos {
     pub id: u8,
     /// The direction of the rotary encoder
     pub direction: Direction,
+}
+
+/// A gesture on a touchpad
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, MaxSize, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct TouchPos {
+    /// The index of the touchpad in the touch map
+    pub id: u8,
+    pub gesture: TouchGesture,
 }
 
 // ============================================================================
@@ -165,6 +179,47 @@ pub enum Axis {
     H,
     V,
     // .. More is allowed
+}
+
+/// Contacts a [`TouchEvent`] carries.
+pub const TOUCH_MAX_CONTACTS: usize = 5;
+
+/// One scan of a multi-touch device such as a trackpad: where each contact is.
+///
+/// Raw data, local to the board the device is on: a touch processor there turns it
+/// into pointing events and gestures, and only those cross the split link. A device
+/// publishes one per scan while something touches, and one without contacts when
+/// the last lifts. Contacts are kept by slot, as in Linux's multi-touch protocol B.
+#[event(
+    channel_size = crate::TOUCH_EVENT_CHANNEL_SIZE,
+    pubs = crate::TOUCH_EVENT_PUB_SIZE,
+    subs = crate::TOUCH_EVENT_SUB_SIZE
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct TouchEvent {
+    /// The id of the pointing device that produced this scan.
+    pub device_id: u8,
+    /// The largest x and y the device reports.
+    pub max: (u16, u16),
+    /// Contacts by slot. A contact keeps its slot until it lifts.
+    pub contacts: [Option<TouchContact>; TOUCH_MAX_CONTACTS],
+}
+
+/// Where a contact is on a touch device, from its top-left corner.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct TouchContact {
+    pub x: u16,
+    pub y: u16,
+}
+
+/// What a touchpad publishes: cursor motion it computes itself, or raw
+/// [`TouchEvent`]s for a touch processor to turn into motion and gestures.
+#[derive(Event, Clone, Debug)]
+pub enum TouchpadEvent {
+    Pointing(PointingEvent),
+    Touch(TouchEvent),
 }
 
 /// Set the CPI (Resolution) of the pointing device

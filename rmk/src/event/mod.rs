@@ -66,7 +66,8 @@ pub use dfu::{DfuCmdEvent, DfuStatusEvent};
 pub use dongle::{DongleState, DongleStateEvent};
 pub use input::{
     Axis, AxisEvent, AxisValType, KeyPos, KeyboardEvent, KeyboardEventPos, ModifierEvent, PointingEvent,
-    PointingProcessorEvent, PointingSetCpiEvent, RotaryEncoderPos,
+    PointingProcessorEvent, PointingSetCpiEvent, RotaryEncoderPos, TOUCH_MAX_CONTACTS, TouchContact, TouchEvent,
+    TouchPos, TouchpadEvent,
 };
 #[cfg(all(feature = "split", feature = "_ble"))]
 pub use split::ClearPeerEvent;
@@ -90,6 +91,15 @@ pub trait AsyncEventPublisher {
 pub trait EventSubscriber {
     type Event;
     async fn next_event(&mut self) -> Self::Event;
+}
+
+// Timer-only processors keep the same run loops without allocating a channel or subscriber slot.
+impl EventSubscriber for core::future::Pending<core::convert::Infallible> {
+    type Event = core::convert::Infallible;
+
+    async fn next_event(&mut self) -> Self::Event {
+        self.await
+    }
 }
 
 /// Trait for events that can be published.

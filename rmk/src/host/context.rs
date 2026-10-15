@@ -115,25 +115,6 @@ impl<'a> KeyboardContext<'a> {
         Ok(())
     }
 
-    pub fn read_macro_buffer(&self, offset: usize, target: &mut [u8]) {
-        self.keymap.read_macro_buffer(offset, target);
-    }
-
-    /// Vial's protocol expects every set to be followed by a full-buffer save.
-    pub async fn write_macro_buffer(&self, offset: usize, data: &[u8]) -> Result<(), ()> {
-        self.keymap.write_macro_buffer(offset, data);
-        #[cfg(feature = "storage")]
-        {
-            store(StorageItem::MacroData(self.keymap.get_macro_sequences())).await?;
-            info!("Saved macros to storage");
-        }
-        Ok(())
-    }
-
-    pub fn reset_macro_buffer(&self) {
-        self.keymap.reset_macro_buffer();
-    }
-
     pub fn with_combos<R>(&self, f: impl FnOnce(&[Option<Combo>]) -> R) -> R {
         self.keymap.with_combos(f)
     }
