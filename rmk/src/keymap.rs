@@ -588,7 +588,7 @@ impl<'a> KeyMap<'a> {
         self.inner.borrow_mut().toggle_layer(layer_num);
     }
 
-    // CCK processors manage their mouse layer using the live keymap.
+    // Pointing-device processors manage their mouse layer using the live keymap.
     /// Activate `layer_num` only if it is currently inactive.
     ///
     /// Returns `true` if this call performed the activation, `false` if the
