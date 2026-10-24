@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Release outstanding matrix keys from a BLE split peripheral when its session ends, without releasing keys from other halves.
+- Handle `CLR_PEER` while BLE split peripherals are offline; forget saved addresses only after storage confirms the write, while preserving the existing message to connected peripherals.
+
 - Make Trouble BLE roles explicit, document environment-variable memory tuning, update the nRF52832 examples to peripheral-only SDC, and derive split notification capacity from Trouble's configured packet-pool MTU.
 
 All notable changes to this project will be documented in this file.

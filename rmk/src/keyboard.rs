@@ -1714,6 +1714,7 @@ impl<'a> Keyboard<'a> {
         #[cfg(feature = "split")]
         if id == NUM_BLE_PROFILE as u8 + 4 {
             info!("Clear peer");
+            crate::split::ble::central::request_clear_peers();
             publish_event(ClearPeerEvent);
         }
         #[cfg(feature = "dongle")]

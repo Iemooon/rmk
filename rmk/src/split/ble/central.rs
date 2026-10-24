@@ -20,9 +20,16 @@ use crate::split::driver::{PeripheralManager, SplitDriverError, SplitReader, Spl
 use crate::split::{PeripheralMatrixConfig, SPLIT_MESSAGE_MAX_SIZE, SplitMessage};
 use crate::storage::{StorageItem, StorageKey, StorageValue, read, store_unchecked};
 
+static CLEAR_PEERS: Signal<crate::RawMutex, ()> = Signal::new();
+
+pub(crate) fn request_clear_peers() {
+    CLEAR_PEERS.signal(());
+}
+
 static PERIPHERAL_FOUND: Signal<crate::RawMutex, (u8, BdAddr)> = Signal::new();
 
 /// One peripheral link's lifecycle, owned by [`scan_and_connect_peripherals`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlotState {
     /// Unknown address: discover the peripheral by scanning.
     NoAddr,
@@ -30,6 +37,22 @@ enum SlotState {
     Disconnected([u8; 6]),
     /// The link is up and handed to the slot's session task.
     Connected([u8; 6]),
+}
+
+impl SlotState {
+    fn forget_after_persist(&mut self, forget_on_end: &mut bool) {
+        match self {
+            Self::Connected(_) => {
+                // Keep the live session long enough to forward ClearPeer.
+                *forget_on_end = true;
+            }
+            Self::Disconnected(_) | Self::NoAddr => {
+                // The next loop must scan, not retry the address just erased.
+                *self = Self::NoAddr;
+                *forget_on_end = false;
+            }
+        }
+    }
 }
 
 // The split service and its two characteristics, declared by `#[gatt_service]`
@@ -60,107 +83,127 @@ pub(crate) async fn scan_and_connect_peripherals<'a, C: Controller + ControllerC
     }
 
     let mut central = stack.central();
+    let mut forget_on_end = [false; crate::SPLIT_PERIPHERALS_NUM];
     wait_for_stack_started().await;
     loop {
         // Mark ended sessions `Disconnected`.
         while let Ok(id) = ended.try_receive() {
             if let SlotState::Connected(addr) = peripheral_slots[id] {
-                peripheral_slots[id] = SlotState::Disconnected(addr);
+                peripheral_slots[id] = if forget_on_end[id] {
+                    SlotState::NoAddr
+                } else {
+                    SlotState::Disconnected(addr)
+                };
+                forget_on_end[id] = false;
             }
         }
 
-        // Put every pending address in one accept list: the controller connects
-        // to whichever peripheral answers first, so an absent one doesn't block
-        // a present one for the whole timeout window.
-        let mut pending: heapless::Vec<(usize, [u8; 6]), { crate::SPLIT_PERIPHERALS_NUM }> = heapless::Vec::new();
-        for (id, slot) in peripheral_slots.iter().enumerate() {
-            if let SlotState::Disconnected(addr) = slot {
-                let _ = pending.push((id, *addr));
+        let step = async {
+            // Put every pending address in one accept list: the controller connects
+            // to whichever peripheral answers first, so an absent one doesn't block
+            // a present one for the whole timeout window.
+            let mut pending: heapless::Vec<(usize, [u8; 6]), { crate::SPLIT_PERIPHERALS_NUM }> = heapless::Vec::new();
+            for (id, slot) in peripheral_slots.iter().enumerate() {
+                if let SlotState::Disconnected(addr) = slot {
+                    let _ = pending.push((id, *addr));
+                }
             }
-        }
-        if !pending.is_empty() {
-            // If there're `Disconnected` peripherals, connect to them first.
-            let targets: heapless::Vec<Address, { crate::SPLIT_PERIPHERALS_NUM }> =
-                pending.iter().map(|(_, addr)| Address::random(*addr)).collect();
-            let config = ConnectConfig {
-                connect_params: default_split_conn_params(),
-                scan_config: ScanConfig {
-                    filter_accept_list: &targets,
-                    ..scan_config(SPLIT_CENTRAL_SCAN_WINDOW)
-                },
-            };
-            info!("Start connecting, {} peripheral(s) pending", pending.len());
-            let connected = match with_timeout(Duration::from_secs(15), central.connect(&config)).await {
-                Ok(Ok(conn)) => {
-                    let peer = conn.peer_address();
-                    if let Some(&(id, addr)) = pending.iter().find(|(_, addr)| Address::random(*addr) == peer) {
-                        info!("Connected to peripheral {}", id);
-                        peripheral_slots[id] = SlotState::Connected(addr);
-                        conns[id].send(conn).await;
-                    } else {
-                        warn!("Connected peer {:?} matches no pending slot", peer.addr);
-                    }
-                    true
-                }
-                Ok(Err(e)) => {
-                    #[cfg(feature = "defmt")]
-                    let e = defmt::Debug2Format(&e);
-                    error!("Connect error: {:?}", e);
-                    Timer::after_millis(500).await;
-                    false
-                }
-                Err(_) => {
-                    // None answered.
-                    if crate::state::current_sleep_state() {
-                        warn!("Connect timeout while asleep, keeping {} address(es)", pending.len());
-                    } else {
-                        warn!("Connect timeout, clearing {} address(es)", pending.len());
-                        for &(id, _) in &pending {
-                            peripheral_slots[id] = SlotState::NoAddr;
+            if !pending.is_empty() {
+                // If there're `Disconnected` peripherals, connect to them first.
+                let targets: heapless::Vec<Address, { crate::SPLIT_PERIPHERALS_NUM }> =
+                    pending.iter().map(|(_, addr)| Address::random(*addr)).collect();
+                let config = ConnectConfig {
+                    connect_params: default_split_conn_params(),
+                    scan_config: ScanConfig {
+                        filter_accept_list: &targets,
+                        ..scan_config(SPLIT_CENTRAL_SCAN_WINDOW)
+                    },
+                };
+                info!("Start connecting, {} peripheral(s) pending", pending.len());
+                let connected = match with_timeout(Duration::from_secs(15), central.connect(&config)).await {
+                    Ok(Ok(conn)) => {
+                        let peer = conn.peer_address();
+                        if let Some(&(id, addr)) = pending.iter().find(|(_, addr)| Address::random(*addr) == peer) {
+                            info!("Connected to peripheral {}", id);
+                            peripheral_slots[id] = SlotState::Connected(addr);
+                            conns[id].send(conn).await;
+                        } else {
+                            warn!("Connected peer {:?} matches no pending slot", peer.addr);
                         }
+                        true
                     }
-                    false
+                    Ok(Err(e)) => {
+                        #[cfg(feature = "defmt")]
+                        let e = defmt::Debug2Format(&e);
+                        error!("Connect error: {:?}", e);
+                        Timer::after_millis(500).await;
+                        false
+                    }
+                    Err(_) => {
+                        // None answered.
+                        if crate::state::current_sleep_state() {
+                            warn!("Connect timeout while asleep, keeping {} address(es)", pending.len());
+                        } else {
+                            warn!("Connect timeout, clearing {} address(es)", pending.len());
+                            for &(id, _) in &pending {
+                                peripheral_slots[id] = SlotState::NoAddr;
+                            }
+                        }
+                        false
+                    }
+                };
+                // If connecting to the peripheral failed, and the central is sleeping,
+                // don't keep connecting, just wait.
+                if !connected {
+                    wait_until_wakeup(ended).await;
                 }
-            };
-            // If connecting to the peripheral failed, and the central is sleeping,
-            // don't keep connecting, just wait.
-            if !connected {
+            } else if peripheral_slots.iter().all(|s| matches!(s, SlotState::Connected(_))) {
+                // All peripherals are connected: wait until a session ends.
+                ended.ready_to_receive().await;
+            } else if crate::state::current_sleep_state() {
+                // There's empty peripheral slot, and the central is sleeping,
+                // don't scanning, just wait.
                 wait_until_wakeup(ended).await;
-            }
-        } else if peripheral_slots.iter().all(|s| matches!(s, SlotState::Connected(_))) {
-            // All peripherals are connected: wait until a session ends.
-            ended.ready_to_receive().await;
-        } else if crate::state::current_sleep_state() {
-            // There's empty peripheral slot, and the central is sleeping,
-            // don't scanning, just wait.
-            wait_until_wakeup(ended).await;
-        } else {
-            // Place the `NoAddr` peripherals by scanning for them.
-            info!("Start scanning peripherals");
-            let session = start_scan(stack, SPLIT_CENTRAL_SCAN_WINDOW, &[]).await;
-            let event = with_timeout(
-                Duration::from_secs(30),
-                select(PERIPHERAL_FOUND.wait(), ended.ready_to_receive()),
-            )
-            .await;
-            // Wait until the controller has confirmed the stop: it refuses an
-            // initiator until then.
-            session.stop().await;
-            info!("Stop scanning");
-            if let Ok(Either::First((id, addr))) = event {
-                // The id comes off the air — bounds-check it. Keep the first
-                // address seen for a slot; an occupied slot is cleared only
-                // when connecting to it times out.
-                match peripheral_slots.get_mut(id as usize) {
-                    Some(slot) if matches!(slot, SlotState::NoAddr) => {
-                        let addr = addr.into_inner();
-                        info!("Scanned new peripheral {:?}", addr);
-                        *slot = SlotState::Disconnected(addr);
-                        store_unchecked(StorageItem::PeerAddress(PeerAddress::new(id, true, addr))).await;
+            } else {
+                // Place the `NoAddr` peripherals by scanning for them.
+                info!("Start scanning peripherals");
+                let session = start_scan(stack, SPLIT_CENTRAL_SCAN_WINDOW, &[]).await;
+                let event = with_timeout(
+                    Duration::from_secs(30),
+                    select(PERIPHERAL_FOUND.wait(), ended.ready_to_receive()),
+                )
+                .await;
+                // Wait until the controller has confirmed the stop: it refuses an
+                // initiator until then.
+                session.stop().await;
+                info!("Stop scanning");
+                if let Ok(Either::First((id, addr))) = event {
+                    // The id comes off the air — bounds-check it. Keep the first
+                    // address seen for a slot; an occupied slot is cleared only
+                    // when connecting to it times out.
+                    match peripheral_slots.get_mut(id as usize) {
+                        Some(slot) if matches!(slot, SlotState::NoAddr) => {
+                            let addr = addr.into_inner();
+                            info!("Scanned new peripheral {:?}", addr);
+                            *slot = SlotState::Disconnected(addr);
+                            store_unchecked(StorageItem::PeerAddress(PeerAddress::new(id, true, addr))).await;
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
+        };
+        if let Either::First(()) = select(CLEAR_PEERS.wait(), step).await {
+            for (id, slot) in peripheral_slots.iter_mut().enumerate() {
+                if let Err(e) =
+                    crate::storage::store(StorageItem::PeerAddress(PeerAddress::new(id as u8, false, [0; 6]))).await
+                {
+                    error!("Could not clear peripheral address: {:?}", e);
+                    continue;
+                }
+                slot.forget_after_persist(&mut forget_on_end[id]);
+            }
+            report_activity();
         }
     }
 }
@@ -223,6 +266,7 @@ pub(crate) async fn run_peripheral_session<
             let e = defmt::Debug2Format(&e);
             error!("BLE central error: {:?}", e);
         }
+        crate::split::driver::release_peripheral_keys(id).await;
         set_peripheral_connected(id, false);
         // Dropping the last handle files a disconnect request that the stack
         // runner serves on its own; the pause lets that finish and lets the
@@ -639,5 +683,32 @@ async fn update_conn_params_on_sleep_change<
         }
 
         sleeping = sleep_events.next_event().await.0;
+    }
+}
+
+#[cfg(test)]
+mod peer_reset_tests {
+    use super::*;
+    #[test]
+    fn offline_clear_forgets_saved_address_without_a_session() {
+        let mut slot = SlotState::Disconnected([1, 2, 3, 4, 5, 6]);
+        let mut forget_on_end = false;
+        slot.forget_after_persist(&mut forget_on_end);
+        assert_eq!(slot, SlotState::NoAddr);
+        assert!(!forget_on_end);
+    }
+    #[test]
+    fn online_clear_keeps_session_but_forgets_it_on_disconnect() {
+        let addr = [1, 2, 3, 4, 5, 6];
+        let mut slot = SlotState::Connected(addr);
+        let mut forget_on_end = false;
+        slot.forget_after_persist(&mut forget_on_end);
+        assert_eq!(slot, SlotState::Connected(addr));
+        assert!(forget_on_end);
+    }
+    #[test]
+    fn clear_request_is_retained_before_a_session_exists() {
+        request_clear_peers();
+        assert_eq!(CLEAR_PEERS.try_take(), Some(()));
     }
 }
