@@ -185,7 +185,7 @@ async fn main(spawner: Spawner) {
         vid: 0x4c4b,
         pid: 0x4643,
         manufacturer: "Haobo",
-        product_name: "RMK nRF54LM20A",
+        product_name: "NRF54TEST",
         ..DeviceConfig::default()
     };
     let storage_config = StorageConfig {
