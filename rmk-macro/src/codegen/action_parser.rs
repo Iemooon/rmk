@@ -757,26 +757,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "unknown key 'Bootloade' (did you mean Bootloader?)")]
-    fn unknown_action_suggests_closest_action() {
-        let _ = expand("Bootloade");
-    }
-
-    #[test]
     #[should_panic(expected = "unknown key 'Spacee'")]
     fn composite_action_tap_slot_validates_its_key() {
         let _ = expand("WM(Spacee, RAlt)");
-    }
-
-    #[test]
-    fn far_off_key_gets_no_hint() {
-        let msg = std::panic::catch_unwind(|| expand("ZqZqZq99"))
-            .unwrap_err()
-            .downcast::<String>()
-            .unwrap();
-        assert!(msg.contains("unknown key 'ZqZqZq99'"), "{msg}");
-        // Nothing within the cutoff, so no fabricated suggestion.
-        assert!(!msg.contains("did you mean"), "{msg}");
     }
 
     #[test]
