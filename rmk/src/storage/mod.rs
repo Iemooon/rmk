@@ -803,6 +803,55 @@ mod tests {
         });
     }
 
+    #[test]
+    fn dfu_marker_is_consumed_before_bootloader_entry() {
+        with_storage_task(Part::new(), async {
+            store_user_data(240, b"WKDFU1:A").await.unwrap();
+            assert!(crate::dfu_window::clear_marker().await);
+            assert_eq!(read_user_data(240).await.as_deref(), Some(&b"WKDFU1:C"[..]));
+        });
+    }
+
+    #[test]
+    fn software_dfu_request_cancels_startup_read_and_clears_armed_marker() {
+        use crate::core_traits::Runnable;
+
+        let part = Part::new();
+        with_storage_task(part.clone(), async {
+            store_user_data(240, b"WKDFU1:A").await.unwrap();
+            assert_eq!(read_user_data(240).await.as_deref(), Some(&b"WKDFU1:A"[..]));
+        });
+        let mut worker = crate::dfu_window::DfuWindow::new();
+        crate::boot::jump_to_bootloader();
+        with_storage_task(part, async {
+            let result = select(worker.run(), async {
+                for _ in 0..20 {
+                    if read_user_data(240).await.as_deref() == Some(&b"WKDFU1:C"[..]) {
+                        return;
+                    }
+                }
+                panic!("software DFU did not consume the marker");
+            })
+            .await;
+            assert!(matches!(result, Either::Second(())));
+        });
+    }
+
+    #[test]
+    fn dfu_marker_clear_failure_prevents_bootloader_entry_and_can_retry() {
+        let part = Part::new();
+        with_storage_task(part.clone(), async {
+            store_user_data(240, b"WKDFU1:A").await.unwrap();
+            assert_eq!(read_user_data(240).await.as_deref(), Some(&b"WKDFU1:A"[..]));
+            part.fail_writes(true);
+            assert!(!crate::dfu_window::clear_marker().await);
+            assert_ne!(read_user_data(240).await.as_deref(), Some(&b"WKDFU1:C"[..]));
+            part.fail_writes(false);
+            assert!(crate::dfu_window::clear_marker().await);
+            assert_eq!(read_user_data(240).await.as_deref(), Some(&b"WKDFU1:C"[..]));
+        });
+    }
+
     // Without the rebuild in `Storage::new`, the cache still describes the pre-erase page layout
     // and the first store lands in a page whose marker is gone, invisible to an uncached map.
     #[test]

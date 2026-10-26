@@ -39,11 +39,12 @@ that format compatible. Advance `STORAGE-BASE-COMMIT` when the format changes.
 
 ## Application responsibilities
 
-The 15–50 second power-cycle DFU policy remains in the firmware repository's
-`common/dfu_policy.rs` and `common/dfu_window.rs`. Applications must install
-the preparation worker before USB starts, stop arming on a software request,
-and clear and verify the persistent marker before the final jump. This RMK
-branch supplies the handshake, not the timer or board-specific flash layout.
+The optional `nrf52833_dfu_window` feature contains the 15–50 second timer and
+the software-entry cleanup worker, migrated from the firmware repository's
+`common/dfu_policy.rs` and `common/dfu_window.rs`. It is off by default and
+selects the nRF52833 HAL chip; selecting another HAL chip at the same time is
+invalid. Board-specific flash layout remains the application's responsibility.
+See [the integration guide](LEMON-NMK-DFU.md).
 
 Gazell RF addresses/channels, pointing processors, wiring, keymaps, Vial
 unlock policy, USB identities, and bootloader partitions remain application

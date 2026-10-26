@@ -101,6 +101,8 @@ pub mod custom_message;
 pub mod debounce;
 #[cfg(feature = "_dfu")]
 pub mod dfu;
+#[cfg(any(feature = "nrf52833_dfu_window", all(test, feature = "storage")))]
+pub mod dfu_window;
 #[cfg(feature = "display")]
 pub mod display;
 #[cfg(feature = "dongle")]

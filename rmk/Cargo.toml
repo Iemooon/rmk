@@ -157,6 +157,10 @@ rp2040 = [
 ## Enable feature if you're using Adafruit nRF52 bootloader and want bootloader jumping key
 adafruit_bl = ["_nrf_ble"]
 
+## nRF52833 only: opt-in 15–50 second power-cycle window and software DFU marker cleanup.
+## Register `dfu_window::DfuWindow` before USB starts and run it alongside storage.
+nrf52833_dfu_window = ["storage", "adafruit_bl", "embassy-nrf/nrf52833"]
+
 ## Enable feature if you're using the ZSA Voyager ignition DFU bootloader
 zsa_voyager_bl = []
 
