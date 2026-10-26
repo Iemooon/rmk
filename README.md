@@ -1,4 +1,6 @@
 <!-- PROJECT LOGO -->
+> **Iemooon/lemon-nmk:** [新增特性与维护记录](LEMON-NMK-FEATURES.md) · [52833 DFU 接入](LEMON-NMK-DFU.md)
+
 <br />
 <p align="center">
   <a href="https://github.com/rmk-rs/rmk">

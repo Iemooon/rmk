@@ -1,5 +1,7 @@
 Base: rmk-rs/rmk 5ed4fd6fc9059107612004a3416b7d2569fbb045
 
+Maintained feature index (Chinese): [LEMON-NMK-FEATURES.md](LEMON-NMK-FEATURES.md).
+
 NMK receiver branch synchronized with dynamic-layers and upstream main.
 Local patches: dynamic layer APIs, BLE split disconnect/offline peer fixes, and optional asynchronous DFU preparation handshake.
 

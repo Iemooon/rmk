@@ -75,6 +75,8 @@ Config is loaded in three layers (later overrides earlier): `event_default.toml`
 
 ## Rules
 
+- On `lemon-nmk`, maintain `LEMON-NMK-FEATURES.md` in the same commit/PR as local feature changes and upstream syncs. Update scope, opt-in defaults, source links, storage compatibility, validation evidence and history. Keep `LEMON-NMK-DFU.md` and `LOCAL-PATCHES.md` consistent. Distinguish host tests, target library checks, full firmware builds and hardware acceptance; never carry older results forward as new verification.
+
 - Don't use `pub use` for convenient usage **within** the crate
 - Don't add a small helper function (≤ 10 lines) that has only one call site — inline it at the call site
 - When writing code comments, follow the principles in [Best practices for writing code comments](https://stackoverflow.blog/2021/12/23/best-practices-for-writing-code-comments/)
