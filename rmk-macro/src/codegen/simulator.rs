@@ -15,7 +15,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::codegen::action_parser::get_key_with_alias;
+use crate::codegen::action_parser::{expand_steno_key, get_key_with_alias};
 use crate::codegen::behavior::expand_behavior_config;
 use crate::codegen::keymap::{expand_encoder_layer, expand_layer};
 use proc_macro2::{Ident, TokenStream as TokenStream2};
@@ -508,10 +508,11 @@ fn expectation(value: &Value) -> Result<TokenStream2, String> {
         }
         "steno" => {
             let keys: Vec<String> = arg(v, op, "an array of steno key names")?;
-            // A `StenoKey` is a bit index into the 64-bit chord bitmap. The array
-            // is annotated so an empty chord still infers.
+            // The array is annotated so an empty chord still infers. The bitmap
+            // is rebuilt from chart indices rather than through `StenoChord`, so
+            // a wrong shift there fails these scenarios.
             let len = keys.len();
-            let keys = keys.iter().map(|k| format_ident!("{}", k.to_uppercase()));
+            let keys = keys.iter().map(|k| expand_steno_key(k));
             quote! {
                 .expect_report(::rmk::hid::Report::StenoReport({
                     let chord: [::rmk::types::steno::StenoKey; #len] =
