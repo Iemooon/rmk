@@ -24,6 +24,7 @@ Vial 解锁设置仍由各固件工程配置。Gazell 无线收发实现也仍�
 | 15～50 秒断电进入 DFU | **仅 nRF52833** | `nrf52833_dfu_window` 加后台任务，默认关闭 | [dfu_window.rs](rmk/src/dfu_window.rs)、[policy.rs](rmk/src/dfu_window/policy.rs) |
 | 软件进入 DFU 前清持久标记 | **52833 窗口任务的配套行为** | 与上项一起启用，不需要修改 Vial 协议 | [boot.rs](rmk/src/boot.rs)、[接入说明](LEMON-NMK-DFU.md) |
 | 稳定存储格式基线 | 启用存储的应用 | 自动使用分支中的基线文件 | [STORAGE-BASE-COMMIT](STORAGE-BASE-COMMIT)、[build.rs](rmk/build.rs) |
+| BLE 并发任务减少临时栈占用 | BLE 键盘中央端 | 自动使用，不改变协议与任务调度顺序 | [ble/mod.rs](rmk/src/ble/mod.rs) |
 
 ### 动态层
 
@@ -52,6 +53,15 @@ Vial 解锁设置仍由各固件工程配置。Gazell 无线收发实现也仍�
 [52833 DFU 接入说明](LEMON-NMK-DFU.md)。不要同时运行旧 common 任务和分支内任务。
 
 ### 存储兼容性
+
+### BLE future 栈占用修复
+
+CCK 迁移构建发现 BLE `join4` 的临时栈帧为 17792 字节，超过现有 16 KiB 检查阈值。
+改为原位 pin 四个子 future，再将引用传入 join，避免完成状态转换时搬运大 future。
+不调整原有栈检查阈值。修复后 CCK MO 探针构建最大单帧为 14272 字节，检查通过；
+主机 Vial/BLE 分体回归 636 项通过。完整固件及实物验收由消费工程另行记录。
+
+### 存储兼容性说明
 
 普通实现提交不再直接作为存储格式身份，使用 `STORAGE-BASE-COMMIT`。
 格式变更时必须更新该基线，不能把旧身份强加到不兼容的新格式上。
@@ -106,3 +116,4 @@ cargo nextest run --manifest-path rmk/Cargo.toml --config-file .config/nextest.t
 | 2026-10-27 | `e3623fee5` | 明确 BLE/NMK 统一分支及公共补丁范围 |
 | 2026-10-27 | `6107d5861` | 新增 52833 可选 DFU 窗口及配套清标记任务 |
 | 2026-10-27 | 文档体系建立 | 建立本文、首页入口及随代码更新的维护规则；删除已合入的 dynamic-layers 分支 |
+| 2026-10-27 | BLE future 栈占用修复 | 针对 CCK 迁移构建，join 原位固定的子 future 引用，保留原栈检查阈值；无存储格式变化 |

@@ -12,6 +12,11 @@ Advance the schema identity whenever stored data formats change.
 
 Hardware behavior remains application/board specific; no device was flashed.
 
+BLE keyboard task joining uses pinned references to avoid large temporary
+future moves in `MaybeDone`. CCK MO probe build: largest frame 14272 bytes
+(previously 17792, unchanged 16384-byte gate); Vial/BLE host tests: 636 passed.
+This does not change the storage format or RF protocol.
+
 ## Unified branch policy
 
 `lemon-nmk` is the common RMK source for NMK/Gazell applications and BLE

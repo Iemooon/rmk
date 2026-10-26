@@ -399,13 +399,12 @@ async fn run_ble_keyboard<
     // The sleep manager lives here because this is the single always-present
     // BLE task: split or not, connected or not, it keeps running, so the
     // sleep state can never get stuck.
-    join4(
-        ble_task(runner, &event_handler),
-        connection_loop,
-        sleep::run_sleep_manager(),
-        profile_manager.run(),
-    )
-    .await;
+    // Join references so MaybeDone does not move large connection futures on completion.
+    let runner_task = core::pin::pin!(ble_task(runner, &event_handler));
+    let connection_loop = core::pin::pin!(connection_loop);
+    let sleep_task = core::pin::pin!(sleep::run_sleep_manager());
+    let profile_task = core::pin::pin!(profile_manager.run());
+    join4(runner_task, connection_loop, sleep_task, profile_task).await;
     unreachable!("BleTransport sub-tasks must run forever")
 }
 
