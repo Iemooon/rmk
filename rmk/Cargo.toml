@@ -190,8 +190,9 @@ dfu_split = ["rmk-macro/dfu_split", "rmk-types/dfu_split"]
 dfu_ext = ["rmk-macro/dfu_ext"]
 
 ## Enable Plover HID stenography support: adds the steno HID descriptor,
-## the steno USB writer endpoint, and the `Action::Steno` variant.
-steno = ["rmk-types/steno"]
+## the steno USB writer endpoint, the `Action::Steno` variant, and build-time
+## validation of `STN()` names in `keyboard.toml`.
+steno = ["rmk-types/steno", "rmk-macro/steno"]
 
 ## Internal feature that indicates no USB is used, this feature will be auto-activated for some chips
 _no_usb = []
