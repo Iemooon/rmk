@@ -24,15 +24,21 @@ A firmware for the [Urchin Keyboard](https://github.com/duckyb/urchin), to use w
 
 ![urchin](../../images/urchin.png)
 
+## [rmk-zsa-planck-ez](https://github.com/atvari-eu/rmk-zsa-planck-ez)
+
+RMK firmware for the ZSA Planck EZ 40% ortholinear keyboard, with Vial keymap editing and support for the Glow underglow variant.
+
+![zsa-planck-ez](../../images/zsa-planck-ez.webp)
+
+## [rmk-zsa-voyager](https://github.com/jpds/rmk-zsa-voyager)
+
+![zsa-voyager](../../images/zsa-voyager.webp)
+
 ## [zx66](https://github.com/zongxin1993/zx66-keybord)
 
 A modular split 66-key keyboard
 
 <img src="https://raw.githubusercontent.com/zongxin1993/zx66-keybord/refs/heads/master/Images/zx66-keybord_03.jpg">
-
-## [rmk-zsa-voyager](https://github.com/jpds/rmk-zsa-voyager)
-
-![zsa-voyager](../../images/zsa-voyager.webp)
 
 ## [Lunakbd](https://github.com/gbPagano/lunakbd)
 
