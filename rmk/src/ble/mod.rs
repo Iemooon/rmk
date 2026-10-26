@@ -3,14 +3,16 @@ use bt_hci::cmd::le::LeSubrateRequest;
 use bt_hci::cmd::le::{LeReadLocalSupportedFeatures, LeSetPhy};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use bt_hci::param::Error as HciError;
-use embassy_futures::join::{join3, join4};
+#[cfg(feature = "split")]
+use embassy_futures::join::join3;
+use embassy_futures::join::join4;
 use embassy_futures::select::{Either, Either3, select, select3};
 #[cfg(feature = "split")]
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 #[cfg(feature = "split")]
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use rmk_types::ble::BleState;
 use rmk_types::connection::ConnectionType;
 use rmk_types::led_indicator::LedIndicator;
@@ -27,7 +29,7 @@ use crate::ble::host::{HOST_WRITE_BUFFER_SIZE, HostGattHandler, HostWriteOutcome
 use crate::ble::led::BleLedReader;
 #[cfg(feature = "passkey_entry")]
 use crate::ble::passkey::{PasskeyInputState, next_gatt_event};
-use crate::ble::profile::{BOND_SLOTS, ProfileInfo, ProfileManager, UPDATED_CCCD_TABLE, UPDATED_PROFILE};
+use crate::ble::profile::{BOND_SLOTS, ProfileInfo, ProfileManager};
 use crate::ble::sleep::{report_activity, request_sleep};
 use crate::channel::{BLE_REPORT_CHANNEL, LED_SIGNAL};
 use crate::config::{BleBatteryConfig, DeviceConfig, RmkConfig};
@@ -47,8 +49,6 @@ pub(crate) mod device_info;
 #[cfg(feature = "host")]
 pub(crate) mod host;
 pub(crate) mod led;
-#[cfg(feature = "_nrf_ble")]
-pub(crate) mod nrf;
 pub mod passkey;
 pub(crate) mod profile;
 #[cfg(any(feature = "split", feature = "dongle"))]
@@ -95,7 +95,7 @@ where
     controller: Option<C>,
     address: [u8; 6],
     device_config: DeviceConfig<'static>,
-    config: BleBatteryConfig<'static>,
+    config: BleBatteryConfig,
     /// One matrix region per split peripheral.
     #[cfg(feature = "split")]
     peripheral_matrices: [PeripheralMatrixConfig; crate::SPLIT_PERIPHERALS_NUM],
@@ -227,14 +227,10 @@ async fn run_ble_keyboard<
 >(
     stack: &Stack<'_, C, DefaultPacketPool>,
     device_config: &DeviceConfig<'static>,
-    config: &BleBatteryConfig<'static>,
+    config: &BleBatteryConfig,
     #[cfg(feature = "host")] host_service: Option<&'r crate::host::HostService<'r>>,
 ) -> ! {
     let product_name = device_config.product_name;
-    #[cfg(feature = "_nrf_ble")]
-    let serial_number = crate::ble::nrf::get_serial_number();
-    #[cfg(not(feature = "_nrf_ble"))]
-    let serial_number = device_config.serial_number;
 
     info!("Starting advertising and GATT service");
     let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
@@ -257,7 +253,7 @@ async fn run_ble_keyboard<
     server
         .set(
             &server.device_config_service.serial_number,
-            &heapless::String::try_from(serial_number).expect("serial_number is too long for BLE"),
+            &device_config.serial_number,
         )
         .unwrap();
     server
@@ -279,15 +275,16 @@ async fn run_ble_keyboard<
     let mut peripheral = stack.peripheral();
     let runner = stack.runner();
 
-    let profile_manager = &mut profile_manager;
-
     let connection_loop = async {
+        // Deadline at which the current advertising session stops; `None` until
+        // the first advertise below sets it.
+        let mut adv_deadline: Option<Instant> = None;
         loop {
             // On the dongle slot, advertise directed to the bonded dongle or
             // as a seeking broadcast; on the normal profiles, plain HID.
             #[cfg(feature = "dongle")]
             let adv = if crate::state::current_profile() == crate::ble::profile::DONGLE_PROFILE {
-                match profile_manager.active_bond_info() {
+                match profile_manager.bond_info(crate::ble::profile::DONGLE_PROFILE) {
                     Some(info) => Adv::Directed(info.info.identity.addr),
                     None => Adv::DongleSeeking,
                 }
@@ -302,8 +299,14 @@ async fn run_ble_keyboard<
             info!("[adv] advertising");
             set_ble_state(BleState::Advertising);
 
+            // Advertise only for the time left in this session, so rejected
+            // reconnects can't push the timeout out indefinitely.
+            let now = Instant::now();
+            let deadline = *adv_deadline.get_or_insert(now + Duration::from_secs(300));
+            let timeout = deadline.saturating_duration_since(now);
+
             match select(
-                advertise(&mut peripheral, &server.server, adv, Duration::from_secs(300)),
+                advertise(&mut peripheral, &server.server, adv, timeout),
                 profile_manager.update_profile(),
             )
             .await
@@ -315,9 +318,9 @@ async fn run_ble_keyboard<
                     }
                     // Do NOT emit BleState::Connected here. gatt_events_task emits
                     // Connected when it sees GattConnectionEvent::Encrypted.
-                    let active_bond_info = profile_manager.active_bond_info();
+                    let profile = crate::state::current_profile();
                     // Check the bond info after the connection is just created.
-                    if let Some(bond) = &active_bond_info
+                    if let Some(bond) = profile_manager.bond_info(profile)
                         && !bond.info.identity.match_identity(&conn.raw().peer_identity())
                     {
                         warn!("[ble] connected peer doesn't match the active profile, disconnecting");
@@ -326,19 +329,20 @@ async fn run_ble_keyboard<
                     }
                     // When connecting to BLE host, check the connected peer is not a dongle.
                     #[cfg(feature = "dongle")]
-                    if crate::state::current_profile() != crate::ble::profile::DONGLE_PROFILE
+                    if profile != crate::ble::profile::DONGLE_PROFILE
                         && profile_manager.is_bonded_dongle(&conn.raw().peer_identity())
                     {
                         warn!("[ble] the bonded dongle connected on a host BLE profile, disconnecting");
                         disconnect(&conn).await;
                         continue;
                     }
-                    if let Either::Second(_) = select(
+                    if let Either::Second(()) = select(
                         serve_keyboard_connection(
                             server,
                             &conn,
                             stack,
-                            active_bond_info,
+                            profile,
+                            &profile_manager,
                             config,
                             #[cfg(feature = "host")]
                             host_service,
@@ -377,6 +381,9 @@ async fn run_ble_keyboard<
                 Either::Second(()) => {}
             };
 
+            // Starts a fresh advertising session.
+            adv_deadline = None;
+
             // Skip the Inactive transition if we never moved off Advertising
             if crate::state::current_ble_status().state != BleState::Advertising {
                 set_ble_state(BleState::Inactive);
@@ -392,10 +399,11 @@ async fn run_ble_keyboard<
     // The sleep manager lives here because this is the single always-present
     // BLE task: split or not, connected or not, it keeps running, so the
     // sleep state can never get stuck.
-    join3(
+    join4(
         ble_task(runner, &event_handler),
         connection_loop,
         sleep::run_sleep_manager(),
+        profile_manager.run(),
     )
     .await;
     unreachable!("BleTransport sub-tasks must run forever")
@@ -434,7 +442,12 @@ pub(crate) async fn ble_task<C: Controller, P: PacketPool, E: EventHandler>(mut 
 ///
 /// This function will handle the GATT events and process them.
 /// This is how we interact with read and write requests.
-async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, DefaultPacketPool>) -> Result<(), Error> {
+async fn gatt_events_task<C: Controller + ControllerCmdAsync<LeSetPhy>>(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+    profile: u8,
+    profiles: &ProfileManager<'_, '_, C, DefaultPacketPool, BOND_SLOTS>,
+) -> Result<(), Error> {
     let level = server.battery_service.level;
     #[cfg(feature = "split")]
     let peripheral_levels = server.peripheral_battery_services.levels;
@@ -470,19 +483,17 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                 #[cfg(feature = "passkey_entry")]
                 passkey_state.clear();
                 info!("[gatt] pairing complete: {:?}", security_level);
-                let profile = crate::state::current_profile();
                 if let Some(bond_info) = bond {
                     let cccd_table = server
                         .get_client_att_table(conn.raw())
                         .and_then(|t| heapless::Vec::from_slice(t.raw()).ok())
                         .unwrap_or_default();
-                    let profile_info = ProfileInfo {
+                    profiles.set_bond(ProfileInfo {
                         slot_num: profile,
                         info: bond_info,
                         removed: false,
                         cccd_table,
-                    };
-                    UPDATED_PROFILE.signal(profile_info);
+                    });
                 }
             }
             GattConnectionEvent::PairingFailed(err) => {
@@ -498,24 +509,9 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                 let mut cccd_updated = false;
                 let result = match &gatt_event {
                     GattEvent::Read(event) => {
-                        if event.handle() == level.handle {
-                            let value = server.get(&level);
-                            debug!("Read GATT Event to Level: {:?}", value);
-                        } else {
-                            #[cfg(feature = "split")]
-                            let peripheral_level =
-                                peripheral_levels.iter().find(|level| event.handle() == level.handle);
-                            #[cfg(not(feature = "split"))]
-                            let peripheral_level: Option<&Characteristic<u8>> = None;
-                            if let Some(peripheral_level) = peripheral_level {
-                                let value = server.get(peripheral_level);
-                                debug!("Read GATT Event to Peripheral Level: {:?}", value);
-                            } else {
-                                debug!("Read GATT Event to Unknown: {:?}", event.handle());
-                            }
-                        }
-
+                        debug!("Read GATT Event: {:?}", event.handle());
                         if conn.raw().security_level()?.encrypted() {
+                            server.refresh_battery_level(event.handle());
                             None
                         } else {
                             Some(AttErrorCode::INSUFFICIENT_ENCRYPTION)
@@ -630,11 +626,6 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                 } else {
                     gatt_event.accept()
                 };
-                match result {
-                    Ok(reply) => reply.send().await,
-                    Err(e) => warn!("[gatt] error sending response: {:?}", e),
-                }
-
                 // Update CCCD table after processing the event
                 if cccd_updated {
                     // When macOS wakes up from sleep mode, it won't send EXIT SUSPEND command
@@ -644,8 +635,12 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                     if let Some(table) = server.get_client_att_table(conn.raw())
                         && let Ok(bytes) = heapless::Vec::from_slice(table.raw())
                     {
-                        UPDATED_CCCD_TABLE.signal(bytes);
+                        profiles.update_profile_cccd_table(profile, bytes);
                     }
+                }
+                match result {
+                    Ok(reply) => reply.send().await,
+                    Err(e) => warn!("[gatt] error sending response: {:?}", e),
                 }
             }
             GattConnectionEvent::PhyUpdated { tx_phy, rx_phy } => {
@@ -806,8 +801,9 @@ async fn serve_keyboard_connection<
     server: &'b Server<'_>,
     conn: &GattConnection<'a, 'b, DefaultPacketPool>,
     stack: &Stack<'_, C, DefaultPacketPool>,
-    active_bond_info: Option<crate::ble::profile::ProfileInfo>,
-    config: &BleBatteryConfig<'a>,
+    profile: u8,
+    profiles: &ProfileManager<'_, '_, C, DefaultPacketPool, BOND_SLOTS>,
+    config: &BleBatteryConfig,
     #[cfg(feature = "host")] host_service: Option<&'r crate::host::HostService<'r>>,
 ) {
     let mut ble_hid_server = BleHidServer::new(server, conn);
@@ -820,7 +816,7 @@ async fn serve_keyboard_connection<
 
     // CCCD lookup uses cached bond info to avoid a cancellable flash read while
     // this future is racing other arms of an outer `select`.
-    if let Some(bond_info) = active_bond_info
+    if let Some(bond_info) = profiles.bond_info(profile)
         && bond_info.info.identity.match_identity(&conn.raw().peer_identity())
     {
         info!("Loading CCCD table: {:?}", bond_info.cccd_table);
@@ -833,10 +829,10 @@ async fn serve_keyboard_connection<
     // `use_1m_phy` exists for legacy host adapters that cannot do 2M.
     // Always use 2M for the dongle link.
     #[cfg(feature = "dongle")]
-    let dongle_link = crate::state::current_profile() == crate::ble::profile::DONGLE_PROFILE;
+    let dongle_link = profile == crate::ble::profile::DONGLE_PROFILE;
     #[cfg(not(feature = "dongle"))]
     let dongle_link = false;
-    let host_phy = if cfg!(feature = "use_1m_phy") && !dongle_link {
+    let host_phy = if !dongle_link && (!crate::BLE_USE_2M_PHY || cfg!(feature = "use_1m_phy")) {
         PhyKind::Le1M
     } else {
         PhyKind::Le2M
@@ -850,7 +846,7 @@ async fn serve_keyboard_connection<
 
     let communication_task = async {
         if let Either3::First(e) = select3(
-            gatt_events_task(server, conn),
+            gatt_events_task(server, conn, profile, profiles),
             set_conn_params(stack, conn),
             battery_task,
         )
@@ -1024,7 +1020,7 @@ mod tests {
     fn set_ble_state_preserves_current_profile() {
         let _guard = ble_status_test_lock().lock().unwrap();
 
-        set_ble_profile(2);
+        set_ble_profile(2, true);
         set_ble_state(BleState::Advertising);
 
         assert_eq!(
@@ -1032,6 +1028,7 @@ mod tests {
             BleStatus {
                 profile: 2,
                 state: BleState::Advertising,
+                bonded: true,
             }
         );
     }
@@ -1040,15 +1037,16 @@ mod tests {
     fn set_ble_profile_resets_state_when_profile_changes() {
         let _guard = ble_status_test_lock().lock().unwrap();
 
-        set_ble_profile(1);
+        set_ble_profile(1, false);
         set_ble_state(BleState::Connected);
-        set_ble_profile(3);
+        set_ble_profile(3, true);
 
         assert_eq!(
             current_ble_status(),
             BleStatus {
                 profile: 3,
                 state: BleState::Inactive,
+                bonded: true,
             }
         );
     }

@@ -15,7 +15,7 @@ use crate::event::DfuCmdEvent;
 #[cfg(feature = "_ble")]
 use crate::event::{BatteryStatusEvent, PeripheralBatteryEvent};
 use crate::event::{
-    KeyboardEvent, KeyboardEventPos, PeripheralConnectedEvent, SubscribableEvent, publish_event, publish_event_async,
+    KeyboardEvent, KeyboardEventSource, PeripheralConnectedEvent, SubscribableEvent, publish_event, publish_event_async,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -27,6 +27,25 @@ pub(crate) enum SplitDriverError {
     SerializeError,
     BleError(u8),
     Disconnected,
+}
+
+#[cfg(feature = "_ble")]
+static PRESSED_KEYS: BlockingMutex<
+    crate::RawMutex,
+    core::cell::RefCell<[super::pressed::PressedKeys; crate::SPLIT_PERIPHERALS_NUM]>,
+> = BlockingMutex::new(core::cell::RefCell::new(
+    [const { super::pressed::PressedKeys::new() }; crate::SPLIT_PERIPHERALS_NUM],
+));
+
+#[cfg(feature = "_ble")]
+pub(crate) async fn release_peripheral_keys(id: usize) {
+    loop {
+        let key = PRESSED_KEYS.lock(|keys| keys.borrow_mut().get_mut(id).and_then(|keys| keys.pop()));
+        let Some((row, col)) = key else {
+            break;
+        };
+        publish_event_async(KeyboardEvent::key(row, col, false)).await;
+    }
 }
 
 /// Split message reader from other split devices
@@ -116,6 +135,211 @@ mod tests {
 
     use super::{current_peripheral_battery_status, set_peripheral_battery};
 
+    struct TestDriver;
+    impl super::SplitReader for TestDriver {
+        async fn read(&mut self) -> Result<super::SplitMessage, super::SplitDriverError> {
+            core::future::pending().await
+        }
+    }
+    impl super::SplitWriter for TestDriver {
+        async fn write(&mut self, _: &super::SplitMessage) -> Result<usize, super::SplitDriverError> {
+            Ok(0)
+        }
+    }
+    #[test]
+    fn disconnect_publishes_release_at_global_peripheral_coordinates() {
+        use embassy_futures::block_on;
+
+        use crate::event::{EventSubscriber, KeyboardEvent, SubscribableEvent};
+        let mut events = KeyboardEvent::subscriber();
+        let manager = super::PeripheralManager::new(
+            TestDriver,
+            0,
+            super::PeripheralMatrixConfig {
+                rows: 4,
+                cols: 6,
+                row_offset: 0,
+                col_offset: 6,
+            },
+        );
+        block_on(manager.process_peripheral_message(super::SplitMessage::Key(KeyboardEvent::key(2, 3, true))));
+        assert_eq!(block_on(events.next_event()), KeyboardEvent::key(2, 9, true));
+        block_on(super::release_peripheral_keys(0));
+        let release = block_on(async { futures::poll!(core::pin::pin!(events.next_event())) });
+        assert_eq!(release, core::task::Poll::Ready(KeyboardEvent::key(2, 9, false)));
+        assert!(super::PRESSED_KEYS.lock(|keys| keys.borrow_mut()[0].pop()).is_none());
+    }
+
+    #[test]
+    fn cancelled_release_keeps_key_for_disconnect_cleanup() {
+        use embassy_futures::block_on;
+
+        use crate::event::{EventSubscriber, KeyboardEvent, SubscribableEvent, publish_event_async};
+        let mut events = KeyboardEvent::subscriber();
+        let manager = super::PeripheralManager::new(
+            TestDriver,
+            0,
+            super::PeripheralMatrixConfig {
+                rows: 4,
+                cols: 6,
+                row_offset: 0,
+                col_offset: 6,
+            },
+        );
+        block_on(manager.process_peripheral_message(super::SplitMessage::Key(KeyboardEvent::key(2, 3, true))));
+        let _ = block_on(events.next_event());
+        for _ in 0..crate::KEYBOARD_EVENT_CHANNEL_SIZE {
+            block_on(publish_event_async(KeyboardEvent::key(0, 0, false)));
+        }
+        {
+            let mut release = core::pin::pin!(
+                manager.process_peripheral_message(super::SplitMessage::Key(KeyboardEvent::key(2, 3, false)))
+            );
+            block_on(async {
+                assert!(futures::poll!(release.as_mut()).is_pending());
+            });
+        }
+        assert_eq!(
+            super::PRESSED_KEYS.lock(|keys| keys.borrow_mut()[0].pop()),
+            Some((2, 9))
+        );
+    }
+
+    #[test]
+    fn cancelled_press_does_not_invent_a_key_for_disconnect_cleanup() {
+        use embassy_futures::block_on;
+
+        use crate::event::{KeyboardEvent, SubscribableEvent, publish_event_async};
+        let _events = KeyboardEvent::subscriber();
+        let manager = super::PeripheralManager::new(
+            TestDriver,
+            0,
+            super::PeripheralMatrixConfig {
+                rows: 4,
+                cols: 6,
+                row_offset: 0,
+                col_offset: 6,
+            },
+        );
+        for _ in 0..crate::KEYBOARD_EVENT_CHANNEL_SIZE {
+            block_on(publish_event_async(KeyboardEvent::key(0, 0, false)));
+        }
+        {
+            let mut press = core::pin::pin!(
+                manager.process_peripheral_message(super::SplitMessage::Key(KeyboardEvent::key(2, 3, true)))
+            );
+            block_on(async {
+                assert!(futures::poll!(press.as_mut()).is_pending());
+            });
+        }
+        assert_eq!(super::PRESSED_KEYS.lock(|keys| keys.borrow_mut()[0].pop()), None);
+    }
+
+    #[test]
+    fn disconnect_preserves_local_input_and_does_not_replay_on_reconnect() {
+        use embassy_futures::block_on;
+
+        use crate::event::{EventSubscriber, KeyboardEvent, SubscribableEvent, publish_event_async};
+        let mut events = KeyboardEvent::subscriber();
+        let manager = super::PeripheralManager::new(
+            TestDriver,
+            0,
+            super::PeripheralMatrixConfig {
+                rows: 4,
+                cols: 6,
+                row_offset: 0,
+                col_offset: 6,
+            },
+        );
+        block_on(publish_event_async(KeyboardEvent::key(0, 0, true)));
+        assert_eq!(block_on(events.next_event()), KeyboardEvent::key(0, 0, true));
+        for (row, col, pressed) in [(1, 1, true), (2, 2, true), (1, 1, false)] {
+            block_on(
+                manager.process_peripheral_message(super::SplitMessage::Key(KeyboardEvent::key(row, col, pressed))),
+            );
+            assert_eq!(block_on(events.next_event()), KeyboardEvent::key(row, col + 6, pressed));
+        }
+        block_on(super::release_peripheral_keys(0));
+        assert_eq!(block_on(events.next_event()), KeyboardEvent::key(2, 8, false));
+        block_on(super::release_peripheral_keys(0));
+        block_on(async {
+            assert!(futures::poll!(core::pin::pin!(events.next_event())).is_pending());
+        });
+        block_on(manager.process_peripheral_message(super::SplitMessage::Key(KeyboardEvent::key(2, 2, true))));
+        assert_eq!(block_on(events.next_event()), KeyboardEvent::key(2, 8, true));
+        block_on(super::release_peripheral_keys(0));
+        assert_eq!(block_on(events.next_event()), KeyboardEvent::key(2, 8, false));
+        block_on(async {
+            assert!(futures::poll!(core::pin::pin!(events.next_event())).is_pending());
+        });
+    }
+
+    #[test]
+    fn disconnect_cleanup_waits_for_backpressure_without_losing_releases() {
+        use embassy_futures::{block_on, join::join};
+
+        use crate::event::{EventSubscriber, KeyboardEvent, SubscribableEvent, publish_event_async};
+        let mut events = KeyboardEvent::subscriber();
+        let manager = super::PeripheralManager::new(
+            TestDriver,
+            0,
+            super::PeripheralMatrixConfig {
+                rows: 4,
+                cols: 6,
+                row_offset: 0,
+                col_offset: 6,
+            },
+        );
+        for col in [1, 2] {
+            block_on(manager.process_peripheral_message(super::SplitMessage::Key(KeyboardEvent::key(1, col, true))));
+            let _ = block_on(events.next_event());
+        }
+        for _ in 0..crate::KEYBOARD_EVENT_CHANNEL_SIZE {
+            block_on(publish_event_async(KeyboardEvent::key(0, 0, false)));
+        }
+        let mut cleanup = core::pin::pin!(super::release_peripheral_keys(0));
+        block_on(async {
+            assert!(futures::poll!(cleanup.as_mut()).is_pending());
+        });
+        block_on(join(cleanup, async {
+            for _ in 0..crate::KEYBOARD_EVENT_CHANNEL_SIZE {
+                assert_eq!(events.next_event().await, KeyboardEvent::key(0, 0, false));
+            }
+            let a = events.next_event().await;
+            let b = events.next_event().await;
+            assert!(a != b);
+            for release in [a, b] {
+                assert!(release == KeyboardEvent::key(1, 7, false) || release == KeyboardEvent::key(1, 8, false));
+            }
+        }));
+        assert!(super::PRESSED_KEYS.lock(|keys| keys.borrow_mut()[0].pop()).is_none());
+    }
+
+    #[test]
+    fn invalid_peripheral_coordinates_never_reach_disconnect_cleanup() {
+        use embassy_futures::block_on;
+
+        use crate::event::{EventSubscriber, KeyboardEvent, SubscribableEvent};
+        let mut events = KeyboardEvent::subscriber();
+        let manager = super::PeripheralManager::new(
+            TestDriver,
+            0,
+            super::PeripheralMatrixConfig {
+                rows: 4,
+                cols: 6,
+                row_offset: 0,
+                col_offset: 6,
+            },
+        );
+        for (row, col) in [(4, 0), (0, 6), (255, 255)] {
+            block_on(manager.process_peripheral_message(super::SplitMessage::Key(KeyboardEvent::key(row, col, true))));
+        }
+        block_on(super::release_peripheral_keys(0));
+        block_on(async {
+            assert!(futures::poll!(core::pin::pin!(events.next_event())).is_pending());
+        });
+    }
+
     #[test]
     fn caches_latest_peripheral_battery_status() {
         let status = rmk_types::battery::BatteryStatus::Available {
@@ -130,11 +354,8 @@ mod tests {
     }
 }
 
-/// PeripheralManager runs in central.
-/// It reads split message from peripheral and updates key matrix cache of the peripheral.
-///
-/// When the central scans the matrix, the scanning thread sends sync signal and gets key state cache back.
-///
+/// PeripheralManager runs on the central and manages communication with one split peripheral.
+/// It publishes input events from that peripheral and sends the central's state changes back.
 pub(crate) struct PeripheralManager<T: SplitReader + SplitWriter> {
     /// Receiver
     pub(crate) transceiver: T,
@@ -208,16 +429,15 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
         #[cfg(feature = "dfu_split")]
         let mut dfu_sub = DfuCmdEvent::subscriber();
 
-        // Send the current state once on startup so the peripheral matches us
-        // even when no transition has happened since the central booted.
-        if self
-            .send(&SplitMessage::ConnectionStatus(
-                crate::state::current_connection_status(),
-            ))
-            .await
-            .is_err()
-        {
-            return;
+        // Send the current state when the session starts.
+        for message in [
+            SplitMessage::ConnectionStatus(crate::state::current_connection_status()),
+            SplitMessage::KeyboardIndicator(crate::keyboard::current_led_indicator().into_bits()),
+            SplitMessage::SleepState(crate::state::current_sleep_state()),
+        ] {
+            if self.send(&message).await.is_err() {
+                return;
+            }
         }
 
         #[cfg(feature = "dfu_split")]
@@ -282,11 +502,23 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
     async fn process_peripheral_message(&self, split_message: SplitMessage) {
         trace!("Got message from peripheral: {:?}", split_message);
         match split_message {
-            SplitMessage::Key(e) => match e.pos {
-                KeyboardEventPos::Key(key_pos) => {
+            SplitMessage::Key(e) => match e.source {
+                KeyboardEventSource::Key(key_pos) => {
                     // Verify the row/col
                     if key_pos.row >= self.matrix_config.rows || key_pos.col >= self.matrix_config.cols {
                         error!("Invalid peripheral row/col: {} {}", key_pos.row, key_pos.col);
+                        return;
+                    }
+                    #[cfg(feature = "_ble")]
+                    if e.pressed
+                        && !PRESSED_KEYS.lock(|keys| {
+                            keys.borrow()[self.id].can_press(
+                                key_pos.row + self.matrix_config.row_offset,
+                                key_pos.col + self.matrix_config.col_offset,
+                            )
+                        })
+                    {
+                        error!("Peripheral pressed-key tracking full");
                         return;
                     }
                     publish_event_async(KeyboardEvent::key(
@@ -295,6 +527,17 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
                         e.pressed,
                     ))
                     .await;
+                    #[cfg(feature = "_ble")]
+                    {
+                        // Commit after delivery: cancellation must not invent a press or lose a release.
+                        PRESSED_KEYS.lock(|keys| {
+                            keys.borrow_mut()[self.id].update(
+                                key_pos.row + self.matrix_config.row_offset,
+                                key_pos.col + self.matrix_config.col_offset,
+                                e.pressed,
+                            );
+                        });
+                    }
                 }
                 _ => publish_event_async(e).await,
             },

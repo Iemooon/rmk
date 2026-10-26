@@ -168,7 +168,7 @@ async fn main(spawner: Spawner) {
         ..DeviceConfig::default()
     };
     let vial_config = VialConfig::new(VIAL_KEYBOARD_ID, VIAL_KEYBOARD_DEF, &[(0, 0), (1, 1)]);
-    let ble_battery_config = BleBatteryConfig::new(Some(is_charging_pin), true, None, false);
+    let ble_battery_config = BleBatteryConfig::default();
     let storage_config = StorageConfig {
         start_addr: 0xA0000,
         num_sectors: 6,
@@ -216,6 +216,7 @@ async fn main(spawner: Spawner) {
         None,
     );
     let mut batt_proc = BatteryProcessor::new(2000, 2806);
+    let mut charging = rmk::input_device::battery::ChargingStateReader::new(is_charging_pin, true);
 
     // Initialize the controllers
     let mut capslock_led = KeyboardIndicatorProcessor::new(
@@ -251,7 +252,8 @@ async fn main(spawner: Spawner) {
 
     let mut peripheral_battery_monitor = PeripheralBatteryMonitor {};
 
-    let mut usb_transport = UsbTransport::new(driver, rmk_config.device_config).with_host_service(&host_service);
+    let mut usb_transport =
+        UsbTransport::new(driver, rmk_config.device_config.clone()).with_host_service(&host_service);
     // The other half: 4x7 at row offset 4 (keymap rows 4..8).
     let mut ble_transport = BleTransport::new(
         sdc,
@@ -279,6 +281,7 @@ async fn main(spawner: Spawner) {
         ble_transport,
         wpm_processor,
         batt_proc,
+        charging,
         keyboard,
         capslock_led,
         peripheral_battery_monitor,

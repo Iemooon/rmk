@@ -7,7 +7,8 @@ use embassy_time::{Duration, Instant, Timer, with_deadline};
 use heapless::Vec;
 use rmk_types::action::{Action, KeyAction, KeyboardAction};
 use rmk_types::fork::StateBits;
-use rmk_types::keycode::{ConsumerKey, HidKeyCode, KeyCode, SpecialKey, SystemControlKey};
+use rmk_types::keyboard_macros::MacroOp;
+use rmk_types::keycode::{ConsumerKey, HidKeyCode, KeyCode, SpecialKey, SystemControlKey, from_ascii};
 use rmk_types::led_indicator::LedIndicator;
 use rmk_types::modifier::ModifierCombination;
 use rmk_types::morse::{MorseMode, MorsePattern, TAP};
@@ -21,7 +22,8 @@ use crate::core_traits::Runnable;
 #[cfg(all(feature = "split", feature = "_ble"))]
 use crate::event::ClearPeerEvent;
 use crate::event::{
-    ActionEvent, KeyboardEvent, KeyboardEventPos, ModifierEvent, SubscribableEvent, publish_event, publish_event_async,
+    ActionEvent, KeyboardEvent, KeyboardEventSource, ModifierEvent, SubscribableEvent, publish_event,
+    publish_event_async,
 };
 use crate::hid::{KeyboardReport, Report};
 use crate::keyboard::combo::Combo;
@@ -29,14 +31,14 @@ use crate::keyboard::fork::ActiveFork;
 use crate::keyboard::held_buffer::{HeldBuffer, HeldKey, KeyState};
 use crate::keyboard::mouse::{MouseAction, MouseState};
 use crate::keyboard::oneshot::OneShotState;
-use crate::keyboard_macros::MacroOperation;
 use crate::keymap::KeyMap;
-use crate::{COMBO_MAX_NUM, FORK_MAX_NUM, MACRO_SPACE_SIZE, boot};
+use crate::{COMBO_MAX_NUM, FORK_MAX_NUM, boot};
 
 pub(crate) mod auto_mouse_layer;
 pub mod combo;
 pub(crate) mod fork;
 pub(crate) mod held_buffer;
+pub(crate) mod macros;
 pub(crate) mod morse;
 pub(crate) mod mouse;
 pub(crate) mod oneshot;
@@ -153,11 +155,6 @@ impl Runnable for Keyboard<'_> {
                 Some(event) => self.process_inner(event).await,
                 None => self.fire_expired().await,
             }
-
-            // Run any macros triggered while handling the event.
-            while let Ok(macro_idx) = crate::channel::MACRO_TRIGGER_CHANNEL.try_receive() {
-                self.execute_macro(macro_idx).await;
-            }
         }
     }
 }
@@ -207,9 +204,8 @@ pub struct Keyboard<'a> {
     /// Caps Word state machine
     caps_word: CapsWordState,
 
-    /// Macro text typing state (affects the effective modifiers)
-    macro_texting: bool,
-    macro_caps: bool,
+    /// When the next macro op may run.
+    macro_due: Instant,
 
     /// The real state before fork activations is stored here
     fork_states: [Option<ActiveFork>; FORK_MAX_NUM], // chosen replacement key of the currently triggered forks and the related modifier suppression
@@ -252,8 +248,7 @@ impl<'a> Keyboard<'a> {
             #[cfg(feature = "_ble")]
             user_hold: None,
             caps_word: CapsWordState::default(),
-            macro_texting: false,
-            macro_caps: false,
+            macro_due: Instant::from_ticks(0),
             fork_states: [None; FORK_MAX_NUM],
             fork_keep_mask: ModifierCombination::default(),
             held_buffer: HeldBuffer::new(),
@@ -311,6 +306,7 @@ impl<'a> Keyboard<'a> {
             self.user_hold.map(|(at, _)| at),
             buffered,
             self.mouse.next_deadline(),
+            self.keymap.macros(|m| m.is_playing()).then_some(self.macro_due),
         ]
         .into_iter()
         .flatten()
@@ -329,6 +325,7 @@ impl<'a> Keyboard<'a> {
         #[cfg(feature = "_ble")]
         self.fire_user_hold().await;
         self.fire_mouse_repeat().await;
+        self.fire_macro().await;
     }
 
     /// Resolve `key` if its timeout has passed: dispatch the combo it waits on, or
@@ -349,7 +346,7 @@ impl<'a> Keyboard<'a> {
 
                 if let Some(key) = self
                     .held_buffer
-                    .remove_if(|k| k.event.pos == key.event.pos && k.state == KeyState::WaitingCombo)
+                    .remove_if(|k| k.event.source == key.event.source && k.state == KeyState::WaitingCombo)
                 {
                     self.keymap.with_combos_mut(|combos| {
                         combos
@@ -368,7 +365,7 @@ impl<'a> Keyboard<'a> {
         }
     }
 
-    /// Process key changes at (row, col)
+    /// Process an input source's press or release.
     pub async fn process_inner(&mut self, event: KeyboardEvent) {
         // A User-key hold gesture needs 5s without any key event, so cancel it here.
         #[cfg(feature = "_ble")]
@@ -386,6 +383,12 @@ impl<'a> Keyboard<'a> {
         // Report activity for sleep management
         #[cfg(feature = "_ble")]
         report_activity();
+
+        if let KeyboardEventSource::KeyCode(keycode) = event.source {
+            self.process_key_action_normal(Action::Key(KeyCode::Hid(keycode)), event)
+                .await;
+            return;
+        }
 
         // Capture the event time once per event and thread it through.
         let event_time = Instant::now();
@@ -407,22 +410,25 @@ impl<'a> Keyboard<'a> {
         // Keys at the same position are kept to allow hold_after_tap on re-press.
         self.held_buffer
             .keys
-            .retain(|k| !matches!(k.state, KeyState::EarlyFired(_)) || k.event.pos == event.pos);
+            .retain(|k| !matches!(k.state, KeyState::EarlyFired(_)) || k.event.source == event.source);
 
         // Fire held keys if needed
         let (keyboard_state_updated, updated_decision_for_cur_key) =
             self.fire_held_keys(decision_for_current_key, decisions).await;
 
         // Process current key action after all held keys are resolved
+        let key_action = if updated_decision_for_cur_key != KeyBehaviorDecision::Buffer
+            && keyboard_state_updated
+            && event.source.is_physical()
+        {
+            // The key_action needs to be updated due to the morse key might be triggered
+            &self.keymap.get_action_with_layer_cache(event)
+        } else {
+            key_action
+        };
         match updated_decision_for_cur_key {
             KeyBehaviorDecision::CleanBuffer | KeyBehaviorDecision::Release => {
                 debug!("Clean buffer, then process current key normally");
-                let key_action = if keyboard_state_updated && event.pos.is_physical() {
-                    // The key_action needs to be updated due to the morse key might be triggered
-                    &self.keymap.get_action_with_layer_cache(event)
-                } else {
-                    key_action
-                };
                 self.process_key_action_inner(key_action, event, event_time).await
             }
             KeyBehaviorDecision::Buffer => {
@@ -444,20 +450,9 @@ impl<'a> Keyboard<'a> {
             KeyBehaviorDecision::Ignore => {
                 debug!("Current key is ignored or not buffered, process normally: {:?}", event);
                 // Process current key normally
-                let key_action = if keyboard_state_updated && event.pos.is_physical() {
-                    // The key_action needs to be updated due to the morse key might be triggered
-                    &self.keymap.get_action_with_layer_cache(event)
-                } else {
-                    key_action
-                };
                 self.process_key_action_inner(key_action, event, event_time).await
             }
             KeyBehaviorDecision::FlowTap => {
-                let key_action = if keyboard_state_updated && event.pos.is_physical() {
-                    &self.keymap.get_action_with_layer_cache(event)
-                } else {
-                    key_action
-                };
                 if !key_action.is_morse() || !Self::is_flow_tap_enabled(self.keymap, key_action) {
                     self.process_key_action_inner(key_action, event, event_time).await;
                     return;
@@ -468,8 +463,8 @@ impl<'a> Keyboard<'a> {
                 // Drop any existing held entry at this position (e.g. an EarlyFired entry left by
                 // a previous quick tap) before inserting the new one. The held buffer assumes one
                 // entry per position; without this the release handler would find the stale entry
-                // first via find_pos_mut, skip the release report, and leave the key stuck down.
-                self.held_buffer.remove_if(|k| k.event.pos == event.pos);
+                // first via find_source_mut, skip the release report, and leave the key stuck down.
+                self.held_buffer.remove_if(|k| k.event.source == event.source);
                 let now = Instant::now();
                 let time_out = now + Self::morse_timeout(self.keymap, key_action, true);
                 self.held_buffer.push(HeldKey::new(
@@ -491,16 +486,16 @@ impl<'a> Keyboard<'a> {
     async fn fire_held_keys(
         &mut self,
         mut decision_for_current_key: KeyBehaviorDecision,
-        decisions: Vec<(KeyboardEventPos, HeldKeyDecision), 16>,
+        decisions: Vec<(KeyboardEventSource, HeldKeyDecision), 16>,
     ) -> (bool, KeyBehaviorDecision) {
         let mut keyboard_state_updated = false;
         // Fire buffered keys
-        for (pos, decision) in decisions {
+        for (source, decision) in decisions {
             // Some decisions of held keys have been made, fire those keys
-            // debug!("✅ Decision for held key: {:?}: {:?}", pos, decision)
+            // debug!("✅ Decision for held key: {:?}: {:?}", source, decision)
             match decision {
                 HeldKeyDecision::UnilateralTap | HeldKeyDecision::FlowTap => {
-                    if let Some(mut held_key) = self.held_buffer.remove_if(|k| k.event.pos == pos)
+                    if let Some(mut held_key) = self.held_buffer.remove_if(|k| k.event.source == source)
                         && held_key.action.is_morse()
                     {
                         // Unilateral tap of the held key is triggered
@@ -537,8 +532,8 @@ impl<'a> Keyboard<'a> {
                     }
                 }
                 HeldKeyDecision::PermissiveHold | HeldKeyDecision::HoldOnOtherKeyPress => {
-                    if let Some(mut held_key) = self.held_buffer.remove_if(|k| k.event.pos == pos) {
-                        let action = if held_key.event.pos.is_physical() {
+                    if let Some(mut held_key) = self.held_buffer.remove_if(|k| k.event.source == source) {
+                        let action = if held_key.event.source.is_physical() {
                             self.keymap.get_action_with_layer_cache(held_key.event)
                         } else {
                             held_key.action
@@ -581,11 +576,11 @@ impl<'a> Keyboard<'a> {
                 HeldKeyDecision::Release => {
                     // Releasing the current key, will always be tapping, because timeout isn't here
                     let mut resolved = false;
-                    if let Some(mut held_key) = self.held_buffer.remove_if(|k| k.event.pos == pos) {
+                    if let Some(mut held_key) = self.held_buffer.remove_if(|k| k.event.source == source) {
                         // Always re-evaluate a physical key based on current layer state.
                         // A prior layer change (e.g. permissive hold activating a layer)
                         // may have changed what action this key maps to.
-                        let key_action = if held_key.event.pos.is_physical() {
+                        let key_action = if held_key.event.source.is_physical() {
                             self.keymap.get_action_with_layer_cache(held_key.event)
                         } else {
                             held_key.action
@@ -656,9 +651,9 @@ impl<'a> Keyboard<'a> {
                     // Check if the normal keys in the buffer should be triggered.
                     let trigger_normal = matches!(decision_for_current_key, KeyBehaviorDecision::CleanBuffer);
 
-                    if trigger_normal && let Some(held_key) = self.held_buffer.remove_if(|k| k.event.pos == pos) {
+                    if trigger_normal && let Some(held_key) = self.held_buffer.remove_if(|k| k.event.source == source) {
                         debug!("Cleaning buffered normal key");
-                        let action = if keyboard_state_updated && held_key.event.pos.is_physical() {
+                        let action = if keyboard_state_updated && held_key.event.source.is_physical() {
                             self.keymap.get_action_with_layer_cache(held_key.event)
                         } else {
                             held_key.action
@@ -686,7 +681,7 @@ impl<'a> Keyboard<'a> {
         event: KeyboardEvent,
     ) -> (
         KeyBehaviorDecision,
-        Vec<(KeyboardEventPos, HeldKeyDecision), HOLD_BUFFER_SIZE>,
+        Vec<(KeyboardEventSource, HeldKeyDecision), HOLD_BUFFER_SIZE>,
     ) {
         // Decision of current key and held keys
         let mut decision_for_current_key = KeyBehaviorDecision::Ignore;
@@ -708,7 +703,7 @@ impl<'a> Keyboard<'a> {
         let check_held_buffer = event.pressed
             || self
                 .held_buffer
-                .find_pos(event.pos)
+                .find_source(event.source)
                 .is_some_and(|k| matches!(k.state, KeyState::Pressed(_) | KeyState::Released(_)));
 
         if check_held_buffer {
@@ -723,9 +718,9 @@ impl<'a> Keyboard<'a> {
                 .filter(|k| matches!(k.state, KeyState::Pressed(_) | KeyState::Released(_)))
             {
                 // Releasing a key is already buffered
-                if !event.pressed && held_key.event.pos == event.pos {
+                if !event.pressed && held_key.event.source == event.source {
                     debug!("Releasing a held key: {:?}", event);
-                    let _ = decisions.push((held_key.event.pos, HeldKeyDecision::Release));
+                    let _ = decisions.push((held_key.event.source, HeldKeyDecision::Release));
                     decision_for_current_key = KeyBehaviorDecision::Release;
                     continue;
                 }
@@ -733,12 +728,12 @@ impl<'a> Keyboard<'a> {
                 // Buffered normal keys should be added to the decision list,
                 // they will be processed later according to the decision of current key
                 if !held_key.action.is_morse() && matches!(held_key.state, KeyState::Pressed(_)) {
-                    let _ = decisions.push((held_key.event.pos, HeldKeyDecision::Normal));
+                    let _ = decisions.push((held_key.event.source, HeldKeyDecision::Normal));
                     continue;
                 }
 
                 // The remaining keys are not same as the current key, check only morse keys
-                if held_key.event.pos != event.pos && held_key.action.is_morse() {
+                if held_key.event.source != event.source && held_key.action.is_morse() {
                     let mode = Self::tap_hold_mode(self.keymap, &held_key.action);
 
                     if event.pressed {
@@ -750,7 +745,7 @@ impl<'a> Keyboard<'a> {
                         {
                             debug!("Flow tap triggered, resolve buffered morse key as tapping");
                             // If flow tap of current key is triggered, tapping all held keys
-                            let _ = decisions.push((held_key.event.pos, HeldKeyDecision::FlowTap));
+                            let _ = decisions.push((held_key.event.source, HeldKeyDecision::FlowTap));
                             continue;
                         }
 
@@ -765,7 +760,7 @@ impl<'a> Keyboard<'a> {
                                     "Trigger morse key due to hold on other key press: {:?}",
                                     held_key.action
                                 );
-                                let _ = decisions.push((held_key.event.pos, HeldKeyDecision::HoldOnOtherKeyPress));
+                                let _ = decisions.push((held_key.event.source, HeldKeyDecision::HoldOnOtherKeyPress));
                                 decision_for_current_key = KeyBehaviorDecision::CleanBuffer;
                             }
                             MorseMode::Normal => {
@@ -775,8 +770,8 @@ impl<'a> Keyboard<'a> {
                                 let unilateral_tap = Self::is_unilateral_tap_enabled(self.keymap, &held_key.action);
                                 if unilateral_tap
                                     && matches!(held_key.state, KeyState::Pressed(_))
-                                    && let KeyboardEventPos::Key(pos1) = held_key.event.pos
-                                    && let KeyboardEventPos::Key(pos2) = event.pos
+                                    && let KeyboardEventSource::Key(pos1) = held_key.event.source
+                                    && let KeyboardEventSource::Key(pos2) = event.source
                                 {
                                     let hand1 = self.keymap.hand_at(pos1.row as usize, pos1.col as usize);
                                     let hand2 = self.keymap.hand_at(pos2.row as usize, pos2.col as usize);
@@ -784,7 +779,7 @@ impl<'a> Keyboard<'a> {
                                         debug!(
                                             "Unilateral tap on press (Normal mode): resolving HRM as tap for correct roll order"
                                         );
-                                        let _ = decisions.push((held_key.event.pos, HeldKeyDecision::UnilateralTap));
+                                        let _ = decisions.push((held_key.event.source, HeldKeyDecision::UnilateralTap));
                                         decision_for_current_key = KeyBehaviorDecision::CleanBuffer;
                                         continue;
                                     }
@@ -798,17 +793,17 @@ impl<'a> Keyboard<'a> {
                         // Note: `decision for current key == Release` means that current held key is pressed AFTER the current releasing key,
                         // releasing a key should not trigger unilateral tap of keys which are pressed AFTER the released key
                         if unilateral_tap
-                            && event.pos != held_key.event.pos
+                            && event.source != held_key.event.source
                             && decision_for_current_key != KeyBehaviorDecision::Release
-                            && let KeyboardEventPos::Key(pos1) = held_key.event.pos
-                            && let KeyboardEventPos::Key(pos2) = event.pos
+                            && let KeyboardEventSource::Key(pos1) = held_key.event.source
+                            && let KeyboardEventSource::Key(pos2) = event.source
                         {
                             let hand1 = self.keymap.hand_at(pos1.row as usize, pos1.col as usize);
                             let hand2 = self.keymap.hand_at(pos2.row as usize, pos2.col as usize);
 
                             if hand1.is_same_side(hand2) {
                                 debug!("Unilateral tap triggered, resolve morse key as tapping");
-                                let _ = decisions.push((held_key.event.pos, HeldKeyDecision::UnilateralTap));
+                                let _ = decisions.push((held_key.event.source, HeldKeyDecision::UnilateralTap));
                                 continue;
                             }
                         }
@@ -818,7 +813,7 @@ impl<'a> Keyboard<'a> {
                         {
                             debug!("Permissive hold!");
                             // Check first current releasing key is in the buffer, AND after the current key
-                            let _ = decisions.push((held_key.event.pos, HeldKeyDecision::PermissiveHold));
+                            let _ = decisions.push((held_key.event.source, HeldKeyDecision::PermissiveHold));
                             decision_for_current_key = KeyBehaviorDecision::CleanBuffer;
                         }
                     }
@@ -835,7 +830,12 @@ impl<'a> Keyboard<'a> {
         event_time: Instant,
     ) {
         // Start forks
-        let key_action = self.try_start_forks(original_key_action, event);
+        let (key_action, dropped_modifiers) = self.try_start_forks(original_key_action, event);
+
+        // Send the modifier release in its own report. macOS may apply the key first if both share a report.
+        if dropped_modifiers {
+            self.send_keyboard_report_with_resolved_modifiers(true).await;
+        }
 
         #[cfg(feature = "_ble")]
         LAST_KEY_TIMESTAMP.signal(Instant::now().as_secs() as u32);
@@ -853,33 +853,33 @@ impl<'a> Keyboard<'a> {
         } else {
             self.process_key_action_morse(&key_action, event, event_time).await;
         }
-        self.try_finish_forks(original_key_action, event);
+        // Restore the modifiers the fork suppressed
+        if self.try_finish_forks(event) {
+            self.send_keyboard_report_with_resolved_modifiers(false).await;
+        }
     }
 
     /// Replaces the incoming key_action if a fork is configured for that key.
     /// The replacement decision is made at key_press time, and the decision
     /// is kept until the key is released.
-    fn try_start_forks(&mut self, key_action: &KeyAction, event: KeyboardEvent) -> KeyAction {
+    /// Also returns whether the fork suppresses held modifiers.
+    fn try_start_forks(&mut self, key_action: &KeyAction, event: KeyboardEvent) -> (KeyAction, bool) {
         if self.keymap.forks_is_empty() {
-            return *key_action;
+            return (*key_action, false);
         }
 
         if !event.pressed {
-            let fork_states = &self.fork_states;
-            let result = self.keymap.with_forks(|forks| {
-                for (i, fork) in forks.iter().enumerate() {
-                    if fork.trigger == *key_action
-                        && let Some(active) = fork_states[i]
-                    {
-                        // If the originating key of a fork is released, simply release the replacement key
-                        // (The fork deactivation is delayed, will happen after the release hid report is sent)
-                        debug!("replace input with fork action {:?}", active);
-                        return Some(active.replacement);
-                    }
-                }
-                None
-            });
-            return result.unwrap_or(*key_action);
+            // Release the replacement; the fork is deactivated after the release report is sent
+            if let Some(active) = self
+                .fork_states
+                .iter()
+                .flatten()
+                .find(|active| active.source == event.source)
+            {
+                debug!("replace input with fork action {:?}", active);
+                return (active.replacement, false);
+            }
+            return (*key_action, false);
         }
 
         let mut decision_state = StateBits {
@@ -888,6 +888,7 @@ impl<'a> Keyboard<'a> {
             leds: LedIndicator::from_bits(LOCK_LED_STATES.load(core::sync::atomic::Ordering::Relaxed)),
             mouse: MouseButtons::from_bits(self.mouse.report.buttons),
         };
+        let layer_bit = 1u32.checked_shl(self.keymap.pressed_layer(event.source).into());
 
         let fork_states = &self.fork_states;
         let fork_keep_mask = &mut self.fork_keep_mask;
@@ -899,9 +900,17 @@ impl<'a> Keyboard<'a> {
 
             'bind: loop {
                 for (i, fork) in forks.iter().enumerate() {
-                    if !triggered_forks[i] && fork_states[i].is_none() && fork.trigger == replacement {
+                    if !triggered_forks[i]
+                        && fork_states[i].is_none()
+                        && fork.trigger == replacement
+                        && (fork.layers == u32::MAX || layer_bit.is_some_and(|bit| fork.layers & bit != 0))
+                    {
                         let decision = (fork.match_any & decision_state) != StateBits::default()
                             && (fork.match_none & decision_state) == StateBits::default();
+
+                        if !decision && fork.negative_output == KeyAction::Transparent {
+                            continue;
+                        }
 
                         replacement = if decision {
                             fork.positive_output
@@ -955,27 +964,35 @@ impl<'a> Keyboard<'a> {
             self.fork_states[initial] = Some(ActiveFork {
                 replacement,
                 suppress: combined_suppress,
+                source: event.source,
             });
         }
 
+        // Modifiers the replacement adds back are not dropped
+        let readded = match replacement {
+            KeyAction::Single(Action::KeyWithModifier(_, modifiers)) => modifiers,
+            _ => ModifierCombination::default(),
+        };
+        let held = self.resolve_explicit_modifiers(event.pressed);
+        let dropped = held & combined_suppress & !self.fork_keep_mask & !readded;
+
         // No (or no more) forks were triggered, so we are done
-        replacement
+        (replacement, dropped.into_bits() != 0)
     }
 
     // Release of forked key must deactivate the fork
     // (explicit modifier suppressing effect will be stopped only AFTER the release hid report is sent)
-    fn try_finish_forks(&mut self, original_key_action: &KeyAction, event: KeyboardEvent) {
+    // Returns whether the resolved modifiers changed
+    fn try_finish_forks(&mut self, event: KeyboardEvent) -> bool {
+        let modifiers_before = self.resolve_modifiers(false);
         if !event.pressed {
-            let fork_states = &mut self.fork_states;
-            self.keymap.with_forks(|forks| {
-                for (i, fork) in forks.iter().enumerate() {
-                    if fork_states[i].is_some() && fork.trigger == *original_key_action {
-                        // if the originating key of a fork is released the replacement decision is not valid anymore
-                        fork_states[i] = None;
-                    }
+            for fork_state in self.fork_states.iter_mut() {
+                if fork_state.is_some_and(|active| active.source == event.source) {
+                    *fork_state = None;
                 }
-            });
+            }
         }
+        self.resolve_modifiers(false) != modifiers_before
     }
 
     /// Trigger a combo that is delayed(if exists).
@@ -1194,7 +1211,7 @@ impl<'a> Keyboard<'a> {
             self.process_key_action(&key.action, key.event, key.press_time).await;
         }
 
-        // Reset triggered combo states
+        // Keep triggered combos intact so their releases can still be matched.
         self.keymap.with_combos_mut(|combos| {
             combos
                 .iter_mut()
@@ -1280,10 +1297,9 @@ impl<'a> Keyboard<'a> {
                 self.send_keyboard_report_with_resolved_modifiers(event.pressed).await;
                 self.update_osl(event);
             }
-            Action::TriggerMacro(macro_idx) => {
-                // Macros are fired on press.
-                if event.pressed && crate::channel::MACRO_TRIGGER_CHANNEL.try_send(macro_idx).is_err() {
-                    warn!("Macro trigger queue full, dropped macro {}", macro_idx);
+            Action::TriggerMacro(idx) => {
+                if !self.keymap.macros(|m| m.queue(idx, event.pressed)) {
+                    warn!("Macro queue full, dropped macro {}", idx);
                 }
             }
             Action::KeyWithModifier(key_code, modifiers) => self.process_action_key(key_code, modifiers, event).await,
@@ -1378,22 +1394,11 @@ impl<'a> Keyboard<'a> {
     }
 
     /// Calculates the combined effect of all modifiers:
-    /// - text macro related modifier suppressions + capitalization
     /// - registered (held) modifiers keys
     /// - one-shot modifiers
     /// - `KeyWithModifier` modifiers, until the next press
     /// - possible fork related modifier suppressions
     pub fn resolve_modifiers(&mut self, pressed: bool) -> ModifierCombination {
-        // Text typing macro should not be affected by any modifiers,
-        // only its own capitalization
-        if self.macro_texting {
-            if self.macro_caps {
-                return ModifierCombination::new().with_left_shift(true);
-            } else {
-                return ModifierCombination::new();
-            }
-        }
-
         // "explicit" modifiers: one-shot modifier, registered held modifiers:
         let mut result = self.resolve_explicit_modifiers(pressed);
 
@@ -1433,6 +1438,7 @@ impl<'a> Keyboard<'a> {
 
             // In passkey mode: capture on release only (prevents Enter release leaking)
             if !event.pressed {
+                self.unregister_key(key, mods, event);
                 match self.passkey_entry_state.handle_key(key) {
                     PasskeyAction::Submitted(passkey) => {
                         info!("[passkey] Submitting passkey");
@@ -1708,6 +1714,7 @@ impl<'a> Keyboard<'a> {
         #[cfg(feature = "split")]
         if id == NUM_BLE_PROFILE as u8 + 4 {
             info!("Clear peer");
+            crate::split::ble::central::request_clear_peers();
             publish_event(ClearPeerEvent);
         }
         #[cfg(feature = "dongle")]
@@ -1721,136 +1728,67 @@ impl<'a> Keyboard<'a> {
         }
     }
 
-    async fn execute_macro(&mut self, macro_idx: u8) {
-        // Every op registers under the macro's own identity, never the trigger key's.
-        let event = KeyboardEvent {
-            pos: KeyboardEventPos::Macro,
+    /// Run the macro op that is due. One op per call, so `run()` handles a queued
+    /// key event before the next op: the macro and the user's keys interleave.
+    async fn fire_macro(&mut self) {
+        if self.macro_due > Instant::now() {
+            return;
+        }
+        let Some(op) = self.keymap.macros(|m| m.next_op()) else {
+            return;
+        };
+        // Every op registers under the macro identity, never the trigger key's.
+        let press = KeyboardEvent {
+            source: KeyboardEventSource::Macro,
             pressed: true,
         };
         let release = KeyboardEvent {
             pressed: false,
-            ..event
+            ..press
         };
-        // Read macro operations until the end of the macro
-        if let Some(macro_start_idx) = self.keymap.get_macro_sequence_start(macro_idx) {
-            let mut offset = 0;
-            loop {
-                // First, get the next macro operation
-                let (operation, new_offset) = self.keymap.get_next_macro_operation(macro_start_idx, offset);
-                // Execute the operation
-                match operation {
-                    MacroOperation::Press(k) => {
-                        self.macro_texting = false;
-                        self.register_key(k, ModifierCombination::new(), event);
-                        self.send_keyboard_report_with_resolved_modifiers(true).await;
-                    }
-                    MacroOperation::Release(k) => {
-                        self.macro_texting = false;
-                        self.unregister_key(k, ModifierCombination::new(), release);
-                        self.send_keyboard_report_with_resolved_modifiers(false).await;
-                    }
-                    MacroOperation::Tap(k) => {
-                        self.macro_texting = false;
-                        self.register_key(k, ModifierCombination::new(), event);
-                        self.send_keyboard_report_with_resolved_modifiers(true).await;
-                        embassy_time::Timer::after_millis(2).await;
-                        self.unregister_key(k, ModifierCombination::new(), release);
-                        self.send_keyboard_report_with_resolved_modifiers(false).await;
-                    }
-                    // A macro can't trigger another macro: that would re-enter this queue, and a
-                    // self- or cycle-triggering macro would loop here forever. Drop it at the source.
-                    #[cfg(feature = "vial")]
-                    MacroOperation::PressAction(Action::TriggerMacro(_))
-                    | MacroOperation::ReleaseAction(Action::TriggerMacro(_))
-                    | MacroOperation::TapAction(Action::TriggerMacro(_)) => {
-                        warn!("A macro cannot trigger another macro");
-                    }
-                    // Extended (16-bit) keycodes (BT profile, PDF, ...) run the decoded action
-                    // through the normal dispatcher, with press/release synthesized from the event.
-                    #[cfg(feature = "vial")]
-                    MacroOperation::PressAction(action) => {
-                        self.macro_texting = false;
-                        self.process_key_action_normal(action, KeyboardEvent { pressed: true, ..event })
-                            .await;
-                    }
-                    #[cfg(feature = "vial")]
-                    MacroOperation::ReleaseAction(action) => {
-                        self.macro_texting = false;
-                        self.process_key_action_normal(
-                            action,
-                            KeyboardEvent {
-                                pressed: false,
-                                ..event
-                            },
-                        )
-                        .await;
-                    }
-                    #[cfg(feature = "vial")]
-                    MacroOperation::TapAction(action) => {
-                        self.macro_texting = false;
-                        self.process_key_action_normal(action, KeyboardEvent { pressed: true, ..event })
-                            .await;
-                        embassy_time::Timer::after_millis(2).await;
-                        self.process_key_action_normal(
-                            action,
-                            KeyboardEvent {
-                                pressed: false,
-                                ..event
-                            },
-                        )
-                        .await;
-                    }
-                    MacroOperation::Text(k, is_cap) => {
-                        self.macro_texting = true;
-                        self.macro_caps = is_cap;
-                        if is_cap {
-                            self.send_keyboard_report_with_resolved_modifiers(true).await;
-                            embassy_time::Timer::after_millis(12).await;
-                        }
-                        self.register_key(k, ModifierCombination::new(), event);
-                        self.send_keyboard_report_with_resolved_modifiers(true).await;
-                        embassy_time::Timer::after_millis(12).await;
-                        self.unregister_key(k, ModifierCombination::new(), release);
-                        self.send_keyboard_report_with_resolved_modifiers(false).await;
-                        if is_cap {
-                            self.macro_caps = false;
-                            embassy_time::Timer::after_millis(12).await;
-                            self.send_keyboard_report_with_resolved_modifiers(false).await;
-                        }
-                    }
-                    MacroOperation::Delay(t) => {
-                        embassy_time::Timer::after_millis(t as u64).await;
-                    }
-                    MacroOperation::End => {
-                        if self.macro_texting {
-                            // Restore held modifiers after text typing stops suppressing them.
-                            self.macro_texting = false;
-                            self.send_keyboard_report_with_resolved_modifiers(false).await;
-                        }
-                        break;
-                    }
-                };
-
-                offset = new_offset;
-                if offset > MACRO_SPACE_SIZE {
-                    break;
+        match op {
+            // Held for the same 10ms as a tap-hold's tap.
+            MacroOp::Tap(action) => self.process_key_action_tap(action, press).await,
+            MacroOp::Press(action) => self.process_key_action_normal(action, press).await,
+            MacroOp::Release(action) => self.process_key_action_normal(action, release).await,
+            // Two reports whose modifiers are the character's own shift and nothing
+            // else, so held modifiers never change what a text macro types.
+            MacroOp::Char(c) => {
+                let (key, shift) = from_ascii(c);
+                let modifiers = ModifierCombination::new().with_left_shift(shift);
+                self.register_key(key, ModifierCombination::new(), press);
+                self.send_keyboard_report(modifiers).await;
+                Timer::after_millis(10).await;
+                self.unregister_key(key, ModifierCombination::new(), release);
+                self.send_keyboard_report(modifiers).await;
+                // The text ends here
+                if !matches!(self.keymap.macros(|m| m.peek_op()), Some(MacroOp::Char(_))) {
+                    Timer::after_millis(10).await;
+                    self.send_keyboard_report_with_resolved_modifiers(false).await;
                 }
-                embassy_time::Timer::after_millis(1).await;
+                if shift {
+                    self.macro_due = Instant::now() + Duration::from_millis(10);
+                }
             }
-        } else {
-            error!("Macro not found");
+            MacroOp::Delay(ms) => self.macro_due = Instant::now() + Duration::from_millis(ms as u64),
+            // The halves split at the first one; a later one does nothing.
+            MacroOp::PauseForRelease => {}
         }
     }
 
-    /// Build the keyboard report for the current held keycodes with modifiers
-    /// resolved.
+    /// Send the keyboard report with resolved modifiers to the host.
+    pub(crate) async fn send_keyboard_report_with_resolved_modifiers(&mut self, pressed: bool) {
+        let modifiers = self.resolve_modifiers(pressed);
+        self.send_keyboard_report(modifiers).await;
+    }
+
+    /// Send the keyboard report for the held keycodes with exactly `modifiers`.
     ///
     /// Multiple slots can hold the same HID usage, but the host only tracks
     /// each usage as up or down, so duplicates are collapsed to the first slot
     /// that holds them. This keeps the shared usage down until the last holder
     /// releases it.
-    pub(crate) fn build_keyboard_report(&mut self, pressed: bool) -> KeyboardReport {
-        let modifiers = self.resolve_modifiers(pressed);
+    async fn send_keyboard_report(&mut self, modifiers: ModifierCombination) {
         let mut keycodes = [0u8; 6];
         let mut n = 0;
         for k in self.registered.iter().filter(|k| k.keycode != HidKeyCode::No) {
@@ -1864,17 +1802,12 @@ impl<'a> Keyboard<'a> {
             "Sending keyboard report, modifiers: {:?}, keycodes: {:?}",
             modifiers, keycodes
         );
-        KeyboardReport {
+        let report = KeyboardReport {
             modifier: modifiers.into_bits(),
             reserved: 0,
             leds: LOCK_LED_STATES.load(core::sync::atomic::Ordering::Relaxed),
             keycodes,
-        }
-    }
-
-    /// Send the keyboard report with resolved modifiers to the host.
-    pub(crate) async fn send_keyboard_report_with_resolved_modifiers(&mut self, pressed: bool) {
-        let report = self.build_keyboard_report(pressed);
+        };
         self.send_report(Report::KeyboardReport(report)).await;
 
         // Yield once after sending the report to channel
@@ -1908,7 +1841,7 @@ impl<'a> Keyboard<'a> {
         if key == HidKeyCode::No && mods.into_bits() == 0 {
             return;
         }
-        let key = RegisteredKey::new(event.pos, key, mods);
+        let key = RegisteredKey::new(event.source, key, mods);
         // A press repeated without a release (a lost release, or a macro pressing a
         // key twice) replaces the old entry.
         self.registered.retain(|k| !k.matches(&key));
@@ -1934,7 +1867,7 @@ impl<'a> Keyboard<'a> {
 
     /// Unregister a released key.
     fn unregister_key(&mut self, key: HidKeyCode, mods: ModifierCombination, event: KeyboardEvent) {
-        let key = RegisteredKey::new(event.pos, key, mods);
+        let key = RegisteredKey::new(event.source, key, mods);
         self.registered.retain(|k| !k.matches(&key));
         if key.keycode == HidKeyCode::No {
             publish_event(ModifierEvent {
@@ -1965,8 +1898,8 @@ impl<'a> Keyboard<'a> {
 
 #[derive(Clone, Copy, Debug)]
 struct RegisteredKey {
-    /// The pos(source) of the registered key.
-    pos: KeyboardEventPos,
+    /// The source of the registered key.
+    source: KeyboardEventSource,
     /// Pressed keycode, `No` for a modifier action.
     keycode: HidKeyCode,
     /// A modifier action's modifiers, or a `KeyWithModifier` key's.
@@ -1975,9 +1908,9 @@ struct RegisteredKey {
 
 impl RegisteredKey {
     /// A modifier keycode counts as a modifier action.
-    fn new(pos: KeyboardEventPos, key: HidKeyCode, mods: ModifierCombination) -> Self {
+    fn new(source: KeyboardEventSource, key: HidKeyCode, mods: ModifierCombination) -> Self {
         Self {
-            pos,
+            source,
             keycode: if key.is_modifier() { HidKeyCode::No } else { key },
             mods: mods | key.to_hid_modifiers(),
         }
@@ -1988,9 +1921,9 @@ impl RegisteredKey {
     fn matches(&self, event: &RegisteredKey) -> bool {
         // `KeyWithModifier` modifiers don't identify a key; a modifier action's modifiers do.
         let same_key = self.keycode == event.keycode && (self.keycode != HidKeyCode::No || self.mods == event.mods);
-        match self.pos {
-            KeyboardEventPos::Macro => same_key,
-            _ => self.pos == event.pos,
+        match self.source {
+            KeyboardEventSource::Macro => same_key,
+            _ => self.source == event.source,
         }
     }
 }
@@ -2036,14 +1969,14 @@ pub enum HeldKeyDecision {
 mod test {
 
     use embassy_time::Duration;
-    use rmk_types::action::KeyAction;
+    use rmk_types::action::{KeyAction, TouchAction, TouchGesture};
     use rmk_types::fork::Fork;
     use rmk_types::modifier::ModifierCombination;
     use rmk_types::morse::{MorseMode, MorseProfile};
 
     use super::*;
     use crate::config::{BehaviorConfig, ForksConfig, PositionalConfig};
-    use crate::event::{KeyPos, KeyboardEvent, KeyboardEventPos};
+    use crate::event::{KeyPos, KeyboardEvent, KeyboardEventSource, TouchPos};
     use crate::test_support::test_block_on as block_on;
     use crate::{a, k, layer, mo, th, thp};
 
@@ -2107,6 +2040,204 @@ mod test {
             fork: cfg,
             ..BehaviorConfig::default()
         })
+    }
+
+    /// A test keyboard with one touchpad, whose actions per layer come from `touch_map`.
+    fn create_test_keyboard_with_touch(touch_map: [[TouchAction; 1]; 2]) -> Keyboard<'static> {
+        let mut config = BehaviorConfig::default();
+        // `get_keymap`'s tap-hold at (row 2, col 1) references profile index 0.
+        let _ = config.morse.profiles.push(MorseProfile::new(
+            Some(true),
+            Some(MorseMode::PermissiveHold),
+            None,
+            None,
+        ));
+        let behavior_config: &'static mut BehaviorConfig = Box::leak(Box::new(config));
+        let per_key_config: &'static PositionalConfig<5, 14> = Box::leak(Box::new(PositionalConfig::default()));
+        let data = Box::leak(Box::new(
+            crate::keymap::KeymapData::new(get_keymap()).with_touch(touch_map),
+        ));
+        let keymap = Box::leak(Box::new(block_on(KeyMap::new(data, behavior_config, per_key_config))));
+        Keyboard::new(keymap)
+    }
+
+    /// A press or release of touchpad 0's tap.
+    fn tap(pressed: bool) -> KeyboardEvent {
+        KeyboardEvent {
+            pressed,
+            source: KeyboardEventSource::Touch(TouchPos {
+                id: 0,
+                gesture: TouchGesture::Tap,
+            }),
+        }
+    }
+
+    #[test]
+    fn touch_gesture_runs_its_action_on_the_active_layer() {
+        let main = async {
+            let mut keyboard = create_test_keyboard_with_touch([
+                [TouchAction::new().with(TouchGesture::Tap, k!(B))],
+                [TouchAction::new().with(TouchGesture::Tap, k!(C))],
+            ]);
+
+            keyboard.process_inner(tap(true)).await;
+            assert_eq!(keyboard.held_keycodes()[0], HidKeyCode::B);
+            keyboard.process_inner(tap(false)).await;
+            assert_eq!(keyboard.held_keycodes()[0], HidKeyCode::No);
+
+            // A tap started on layer 0 releases its layer 0 action after layer 1 turns on.
+            keyboard.process_inner(tap(true)).await;
+            keyboard.process_inner(KeyboardEvent::key(4, 9, true)).await;
+            keyboard.process_inner(tap(false)).await;
+            assert_eq!(keyboard.held_keycodes()[0], HidKeyCode::No);
+
+            // With layer 1 on, the tap runs layer 1's action.
+            keyboard.process_inner(tap(true)).await;
+            assert_eq!(keyboard.held_keycodes()[0], HidKeyCode::C);
+            keyboard.process_inner(tap(false)).await;
+            keyboard.process_inner(KeyboardEvent::key(4, 9, false)).await;
+            assert_eq!(keyboard.held_keycodes()[0], HidKeyCode::No);
+        };
+        block_on(main);
+    }
+
+    #[test]
+    fn a_transparent_touch_gesture_takes_the_action_below() {
+        let main = async {
+            let mut keyboard = create_test_keyboard_with_touch([
+                [TouchAction::new().with(TouchGesture::Tap, k!(B))],
+                [TouchAction::transparent()],
+            ]);
+
+            keyboard.process_inner(KeyboardEvent::key(4, 9, true)).await;
+            keyboard.process_inner(tap(true)).await;
+            assert_eq!(keyboard.held_keycodes()[0], HidKeyCode::B);
+            keyboard.process_inner(tap(false)).await;
+            keyboard.process_inner(KeyboardEvent::key(4, 9, false)).await;
+            assert_eq!(keyboard.held_keycodes()[0], HidKeyCode::No);
+        };
+        block_on(main);
+    }
+
+    #[test]
+    fn direct_keycodes_bypass_keymap_combos_and_forks() {
+        block_on(async {
+            let mut behavior = BehaviorConfig::default();
+            behavior.combo.combos[0] = Some(Combo::new(rmk_types::combo::Combo::new(
+                [k!(Right), k!(Up)],
+                k!(Escape),
+                None,
+            )));
+            behavior
+                .fork
+                .forks
+                .push(Fork {
+                    trigger: k!(Right),
+                    positive_output: k!(B),
+                    negative_output: k!(C),
+                    ..Fork::default()
+                })
+                .unwrap();
+            let mut keyboard = create_test_keyboard_with_config(behavior);
+            keyboard.keymap.activate_layer(1);
+            keyboard
+                .process_inner(KeyboardEvent::virtual_key(HidKeyCode::Right as u8, true))
+                .await;
+            keyboard
+                .process_inner(KeyboardEvent::virtual_key(HidKeyCode::Right as u8, false))
+                .await;
+            assert!(keyboard.registered.is_empty());
+            keyboard
+                .process_inner(KeyboardEvent::keycode(HidKeyCode::Right, true))
+                .await;
+            keyboard
+                .process_inner(KeyboardEvent::keycode(HidKeyCode::Up, true))
+                .await;
+            assert_eq!(&keyboard.held_keycodes()[..2], &[HidKeyCode::Right, HidKeyCode::Up]);
+            assert!(keyboard.held_buffer.is_empty());
+            assert!(keyboard.fork_states.iter().all(Option::is_none));
+            keyboard
+                .process_inner(KeyboardEvent::keycode(HidKeyCode::Right, false))
+                .await;
+            keyboard
+                .process_inner(KeyboardEvent::keycode(HidKeyCode::Up, false))
+                .await;
+            assert!(keyboard.registered.is_empty());
+        });
+    }
+
+    #[test]
+    fn repeated_direct_presses_do_not_release_physical_keys() {
+        block_on(async {
+            let mut keyboard = create_test_keyboard();
+            for keycode in [HidKeyCode::Right, HidKeyCode::LShift] {
+                keyboard.keymap.set_action_at(
+                    KeyboardEventSource::key_pos(0, 0),
+                    0,
+                    KeyAction::Single(Action::Key(KeyCode::Hid(keycode))),
+                );
+                keyboard.process_inner(KeyboardEvent::key(0, 0, true)).await;
+                keyboard.process_inner(KeyboardEvent::key(0, 0, true)).await;
+                keyboard.process_inner(KeyboardEvent::keycode(keycode, true)).await;
+                keyboard.process_inner(KeyboardEvent::keycode(keycode, true)).await;
+                assert_eq!(keyboard.registered.len(), 2);
+                keyboard.process_inner(KeyboardEvent::keycode(keycode, false)).await;
+                assert_eq!(keyboard.registered.len(), 1);
+                assert_eq!(keyboard.registered[0].source, KeyboardEventSource::key_pos(0, 0));
+                keyboard.process_inner(KeyboardEvent::keycode(keycode, false)).await;
+                assert_eq!(keyboard.registered.len(), 1);
+                keyboard.process_inner(KeyboardEvent::key(0, 0, false)).await;
+                assert!(keyboard.registered.is_empty());
+            }
+        });
+    }
+
+    #[cfg(not(feature = "_no_usb"))]
+    #[test]
+    fn direct_keycodes_use_normal_oneshot_and_consumer_execution() {
+        use rmk_types::connection::UsbState;
+        use rmk_types::keycode::ConsumerKey;
+
+        use crate::channel::USB_REPORT_CHANNEL;
+
+        block_on(async {
+            let mut keyboard = create_test_keyboard();
+            crate::state::set_usb_state(UsbState::Configured);
+            USB_REPORT_CHANNEL.clear();
+            keyboard.osm_state = OneShotState::Single(ModifierCombination::new().with_left_shift(true));
+            keyboard
+                .process_inner(KeyboardEvent::keycode(HidKeyCode::Right, true))
+                .await;
+            let Report::KeyboardReport(report) = USB_REPORT_CHANNEL.try_receive().unwrap() else {
+                panic!()
+            };
+            assert_eq!(report.modifier, 2);
+            assert_eq!(report.keycodes[0], HidKeyCode::Right as u8);
+            assert!(matches!(keyboard.osm_state, OneShotState::None));
+            keyboard
+                .process_inner(KeyboardEvent::keycode(HidKeyCode::Right, false))
+                .await;
+            let Report::KeyboardReport(report) = USB_REPORT_CHANNEL.try_receive().unwrap() else {
+                panic!()
+            };
+            assert_eq!(report.modifier, 0);
+            assert_eq!(report.keycodes, [0; 6]);
+
+            keyboard
+                .process_inner(KeyboardEvent::keycode(HidKeyCode::AudioVolUp, true))
+                .await;
+            let Report::MediaKeyboardReport(report) = USB_REPORT_CHANNEL.try_receive().unwrap() else {
+                panic!()
+            };
+            assert_eq!({ report.usage_id }, u16::from(ConsumerKey::VolumeIncrement));
+            keyboard
+                .process_inner(KeyboardEvent::keycode(HidKeyCode::AudioVolUp, false))
+                .await;
+            let Report::MediaKeyboardReport(report) = USB_REPORT_CHANNEL.try_receive().unwrap() else {
+                panic!()
+            };
+            assert_eq!({ report.usage_id }, 0);
+        });
     }
 
     #[test]
@@ -2199,7 +2330,7 @@ mod test {
         let main = async {
             let mut keyboard = create_test_keyboard();
             keyboard.keymap.set_action_at(
-                KeyboardEventPos::Key(KeyPos { row: 0, col: 0 }),
+                KeyboardEventSource::Key(KeyPos { row: 0, col: 0 }),
                 0,
                 KeyAction::Single(Action::Key(KeyCode::Hid(HidKeyCode::Again))),
             );
@@ -2240,7 +2371,7 @@ mod test {
         let main = async {
             let mut keyboard = create_test_keyboard();
             keyboard.keymap.set_action_at(
-                KeyboardEventPos::Key(KeyPos { row: 0, col: 0 }),
+                KeyboardEventSource::Key(KeyPos { row: 0, col: 0 }),
                 0,
                 KeyAction::TapHold(
                     Action::Key(KeyCode::Hid(HidKeyCode::F)),
@@ -2249,12 +2380,12 @@ mod test {
                 ),
             );
             keyboard.keymap.set_action_at(
-                KeyboardEventPos::Key(KeyPos { row: 2, col: 1 }),
+                KeyboardEventSource::Key(KeyPos { row: 2, col: 1 }),
                 0,
                 KeyAction::Single(Action::Key(KeyCode::Hid(HidKeyCode::A))),
             );
             keyboard.keymap.set_action_at(
-                KeyboardEventPos::Key(KeyPos { row: 2, col: 2 }),
+                KeyboardEventSource::Key(KeyPos { row: 2, col: 2 }),
                 0,
                 KeyAction::Single(Action::Key(KeyCode::Hid(HidKeyCode::S))),
             );
@@ -2359,6 +2490,7 @@ mod test {
                 match_none: StateBits::default(),
                 kept_modifiers: ModifierCombination::default(),
                 bindable: false,
+                layers: u32::MAX,
             };
 
             //{ trigger = "Comma", negative_output = "Comma", positive_output = "Semicolon", match_any = "LShift|RShift" },
@@ -2376,6 +2508,7 @@ mod test {
                 match_none: StateBits::default(),
                 kept_modifiers: ModifierCombination::default(),
                 bindable: false,
+                layers: u32::MAX,
             };
 
             let mut keyboard = create_test_keyboard_with_forks(fork1, fork2);
@@ -2466,6 +2599,7 @@ mod test {
                     .with_left_shift(true)
                     .with_right_shift(true),
                 bindable: false,
+                layers: u32::MAX,
             };
 
             //{ trigger = "A", negative_output = "S", positive_output = "D", match_any = "MouseBtn5" },
@@ -2481,13 +2615,14 @@ mod test {
                 match_none: StateBits::default(),
                 kept_modifiers: ModifierCombination::default(),
                 bindable: false,
+                layers: u32::MAX,
             };
 
             let mut keyboard = create_test_keyboard_with_forks(fork1, fork2);
 
             // disable th on a
             keyboard.keymap.set_action_at(
-                KeyboardEventPos::Key(KeyPos { row: 2, col: 1 }),
+                KeyboardEventSource::Key(KeyPos { row: 2, col: 1 }),
                 0,
                 KeyAction::Single(Action::Key(KeyCode::Hid(HidKeyCode::A))),
             );

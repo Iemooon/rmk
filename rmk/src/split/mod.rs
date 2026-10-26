@@ -16,6 +16,8 @@ pub(crate) mod dfu;
 /// Common abstraction layer of split driver
 pub(crate) mod driver;
 pub mod peripheral;
+#[cfg(feature = "_ble")]
+mod pressed;
 #[cfg(feature = "rp2040")]
 pub mod rp;
 #[cfg(not(feature = "_ble"))]

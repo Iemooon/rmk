@@ -8,6 +8,9 @@ use serde_inline_default::serde_inline_default;
 /// Event channel default configuration
 const EVENT_DEFAULT_CONFIG: &str = include_str!("default_config/event_default.toml");
 
+mod battery;
+pub use battery::BatteryTomlConfig;
+
 pub(crate) mod chip;
 pub(crate) mod communication;
 pub mod resolved;
@@ -15,15 +18,14 @@ pub mod resolved;
 pub mod usb_interrupt_map;
 pub(crate) mod behavior;
 pub(crate) mod board;
-pub(crate) mod dfu;
-pub(crate) mod display;
 pub(crate) mod host;
 pub(crate) mod keycode_alias;
 pub(crate) mod keymap;
 pub mod layout;
 pub use layout::{STOCK_WIDTHS, layout_blob_from_toml, layout_info_from_toml};
-pub(crate) mod light;
-pub(crate) mod storage;
+
+/// Bytes in one persisted macro chunk, shared by configuration and firmware.
+pub const MACRO_CHUNK_SIZE: usize = 32;
 
 /// Protocol-level capacity ceilings for wire-format Vec sizes.
 ///
@@ -39,8 +41,8 @@ pub mod protocol_limits {
     pub const MAX_COMBO_SIZE: usize = 16;
     /// Max pattern entries per morse key — ceiling for `MORSE_SIZE`
     pub const MAX_MORSE_SIZE: usize = 32;
-    /// Max bytes per macro data chunk — ceiling for `MACRO_DATA_SIZE`
-    pub const MAX_MACRO_DATA_SIZE: usize = 256;
+    /// The u8 storage index addresses chunks 0 through 255.
+    pub const MAX_MACRO_SPACE_SIZE: usize = super::MACRO_CHUNK_SIZE * (u8::MAX as usize + 1);
     /// Max key positions in an unlock challenge.
     pub const MAX_UNLOCK_KEYS_SIZE: usize = 4;
 }
@@ -97,6 +99,8 @@ pub struct KeyboardTomlConfig {
     storage: Option<StorageConfig>,
     /// DFU partition config (embassy-boot)
     dfu: Option<DfuTomlConfig>,
+    /// Battery inputs for a unibody keyboard.
+    pub(crate) battery: Option<BatteryTomlConfig>,
     /// Ble config
     pub(crate) ble: Option<BleConfig>,
     /// Chip-specific configs (e.g., [chip.nrf52840])
@@ -188,6 +192,11 @@ impl KeyboardTomlConfig {
         let mut config = Self::parse_from_toml_path(path, Some(default_config_str));
         config.set_storage_user_flags(user_config.storage.as_ref());
         config.dfu_user_set = user_config.dfu.is_some();
+        // Split battery resolution applies the preset per side; only an explicit
+        // top-level [battery] should reach its validation error.
+        if config.split.is_some() && user_config.battery.is_none() {
+            config.battery = None;
+        }
 
         config.auto_calculate_parameters();
 
@@ -310,8 +319,13 @@ pub(crate) struct RmkConstantsConfig {
     #[serde_inline_default(8)]
     #[serde(deserialize_with = "check_max_patterns_per_key")]
     pub max_patterns_per_key: usize,
-    /// Macro space size in bytes for storing sequences
+    /// Maximum number of macros, default and host-written together
+    #[serde_inline_default(32)]
+    #[serde(deserialize_with = "check_macro_max_num")]
+    pub macro_max_num: usize,
+    /// Bytes of the buffer every macro shares, a multiple of 32
     #[serde_inline_default(256)]
+    #[serde(deserialize_with = "check_macro_space_size")]
     pub macro_space_size: usize,
     /// Default debounce time in ms
     #[serde_inline_default(20)]
@@ -334,10 +348,6 @@ pub(crate) struct RmkConstantsConfig {
     /// BLE Split Central sleep timeout in seconds (0 = disabled)
     #[serde_inline_default(0)]
     pub split_central_sleep_timeout_seconds: u32,
-    /// Maximum macro data chunk size for protocol transfers (bytes).
-    /// Smaller values reduce firmware RAM usage but require more round-trips.
-    #[serde_inline_default(64)]
-    pub protocol_macro_chunk_size: usize,
     /// Maximum number of auto mouse layer entries; auto-derived from `[[behavior.auto_mouse_layer]]` if unset.
     #[serde(default)]
     pub auto_mouse_layer_max_num: Option<usize>,
@@ -359,6 +369,33 @@ where
     if value > u8::MAX as usize {
         return Err(de::Error::custom(format!(
             "combo_max_num must be between 0 and 255, got {value}"
+        )));
+    }
+    Ok(value)
+}
+
+fn check_macro_max_num<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    let value = Deserialize::deserialize(deserializer)?;
+    if value > u8::MAX as usize {
+        return Err(de::Error::custom(format!(
+            "macro_max_num must be between 0 and 255, got {value}"
+        )));
+    }
+    Ok(value)
+}
+
+fn check_macro_space_size<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    let value: usize = Deserialize::deserialize(deserializer)?;
+    if !value.is_multiple_of(MACRO_CHUNK_SIZE) || value > protocol_limits::MAX_MACRO_SPACE_SIZE {
+        return Err(de::Error::custom(format!(
+            "macro_space_size must be a multiple of {MACRO_CHUNK_SIZE} between 0 and {}, got {value}",
+            protocol_limits::MAX_MACRO_SPACE_SIZE
         )));
     }
     Ok(value)
@@ -430,6 +467,7 @@ impl Default for RmkConstantsConfig {
             morse_max_num: 8,
             morse_profile_max_num: 16,
             max_patterns_per_key: 8,
+            macro_max_num: 32,
             macro_space_size: 256,
             debounce_time: 20,
             report_channel_size: 16,
@@ -438,7 +476,6 @@ impl Default for RmkConstantsConfig {
             split_peripherals_num: 0,
             ble_profiles_num: 3,
             split_central_sleep_timeout_seconds: 0,
-            protocol_macro_chunk_size: 64,
             auto_mouse_layer_max_num: None,
             rynk_buffer_size: 488,
             dongle_pairing_window_secs: 30,
@@ -514,6 +551,7 @@ define_event_config!(
     charging_state,
     // Pointing device events
     pointing,
+    touch,
     // Split events
     peripheral_connected,
     central_connected,
@@ -731,13 +769,6 @@ pub struct ExternalFlashTomlConfig {
 #[serde(deny_unknown_fields)]
 pub struct BleConfig {
     pub enabled: bool,
-    pub battery_adc_pin: Option<String>,
-    /// User-facing description for the Battery Level characteristic.
-    pub battery_user_description: Option<String>,
-    pub charge_state: Option<PinConfig>,
-    pub charge_led: Option<PinConfig>,
-    pub adc_divider_measured: Option<u32>,
-    pub adc_divider_total: Option<u32>,
     pub default_tx_power: Option<i8>,
     pub use_2m_phy: Option<bool>,
     pub passkey_entry: Option<bool>,
@@ -950,11 +981,24 @@ pub(crate) struct MacroConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "lowercase")]
 pub(crate) enum MacroOperation {
-    Tap { keycode: String },
-    Down { keycode: String },
-    Up { keycode: String },
-    Delay { duration: DurationMillis },
-    Text { text: String },
+    Tap {
+        keycode: String,
+    },
+    Down {
+        keycode: String,
+    },
+    Up {
+        keycode: String,
+    },
+    Delay {
+        duration: DurationMillis,
+    },
+    Text {
+        text: String,
+    },
+    /// The ops before it run on the macro key's press, the ops after it on its release
+    #[serde(rename = "pause_for_release")]
+    PauseForRelease,
 }
 
 /// Configurations for forks
@@ -968,13 +1012,31 @@ pub(crate) struct ForksConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ForkConfig {
-    pub trigger: String,
-    pub negative_output: String,
-    pub positive_output: String,
+    pub trigger: ForkTrigger,
+    pub negative_output: Option<String>,
+    pub positive_output: Option<String>,
     pub match_any: Option<String>,
     pub match_none: Option<String>,
     pub kept_modifiers: Option<String>,
     pub bindable: Option<bool>,
+    pub layers: Option<Vec<u8>>,
+}
+
+/// One trigger key, or a list of them.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ForkTrigger {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl ForkTrigger {
+    pub(crate) fn keys(&self) -> &[String] {
+        match self {
+            Self::One(key) => std::slice::from_ref(key),
+            Self::Many(keys) => keys,
+        }
+    }
 }
 
 /// Configurations for morse keys
@@ -1093,14 +1155,8 @@ pub struct SplitBoardConfig {
     pub input_device: Option<InputDeviceConfig>,
     /// Display config for the split board
     pub display: Option<DisplayConfig>,
-    /// Battery ADC pin for this split board
-    pub battery_adc_pin: Option<String>,
-    /// User-facing description for this board's Battery Level characteristic
-    pub battery_user_description: Option<String>,
-    /// ADC divider measured value for battery
-    pub adc_divider_measured: Option<u32>,
-    /// ADC divider total value for battery
-    pub adc_divider_total: Option<u32>,
+    /// Battery inputs local to this split board.
+    pub battery: Option<BatteryTomlConfig>,
     /// Output Pin config for the split
     pub output: Option<Vec<OutputConfig>>,
     /// DFU config for this split board.
@@ -1275,6 +1331,21 @@ pub struct Pmw3610Config {
     /// Swap X and Y axes
     #[serde(default)]
     pub proc_swap_xy: bool,
+    /// Cursor acceleration in the PointingProcessor. Off unless configured.
+    pub acceleration: Option<PointingAccelerationConfig>,
+    /// Scroll-mode acceleration in the PointingProcessor. Off unless configured.
+    pub scroll_acceleration: Option<PointingAccelerationConfig>,
+}
+
+/// Pointer acceleration for cursor or scroll mode: motion faster than `from` is scaled up in
+/// proportion to its speed, up to `max`; slower motion passes unchanged.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PointingAccelerationConfig {
+    /// Speed where acceleration starts, in sensor counts per second.
+    pub from: u16,
+    /// The most motion is scaled up, in percent (250 = 2.5×).
+    pub max: u16,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -1313,6 +1384,10 @@ pub struct Pmw33xxConfig {
     // Swap X and Y axes
     #[serde(default)]
     pub proc_swap_xy: bool,
+    /// Cursor acceleration in the PointingProcessor. Off unless configured.
+    pub acceleration: Option<PointingAccelerationConfig>,
+    /// Scroll-mode acceleration in the PointingProcessor. Off unless configured.
+    pub scroll_acceleration: Option<PointingAccelerationConfig>,
     /// Report rate (Hz). Motion will be accumulated and emitted at this rate.
     #[serde(default = "default_pointing_report_hz")]
     pub report_hz: u16,
@@ -1342,6 +1417,10 @@ pub struct Iqs5xxConfig {
     /// Swap X and Y in the PointingProcessor.
     #[serde(default)]
     pub proc_swap_xy: bool,
+    /// Cursor acceleration in the PointingProcessor. Off unless configured.
+    pub acceleration: Option<PointingAccelerationConfig>,
+    /// Scroll-mode acceleration in the PointingProcessor. Off unless configured.
+    pub scroll_acceleration: Option<PointingAccelerationConfig>,
 }
 
 /// I²C bus configuration for the IQS5xx. Distinct from the generic `I2cConfig`
@@ -1568,6 +1647,23 @@ channel_size = 32
         assert_eq!(config.event.modifier.channel_size, 8);
         assert_eq!(config.event.modifier.subs, 2);
         assert_eq!(config.event.layer_change.subs, 1);
+    }
+
+    #[test]
+    fn macro_space_size_matches_chunk_index_capacity() {
+        for size in [0, 32, 256, 1024, 1056, 8160, 8192] {
+            let config: KeyboardTomlConfig = toml::from_str(&format!("[rmk]\nmacro_space_size = {size}\n")).unwrap();
+            assert_eq!(config.build_constants(&[]).unwrap().macro_space_size, size);
+        }
+        for size in [31, 33, 8191, 8193, 8224, 65535] {
+            let error =
+                toml::from_str::<KeyboardTomlConfig>(&format!("[rmk]\nmacro_space_size = {size}\n")).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("macro_space_size must be a multiple of 32 between 0 and 8192")
+            );
+        }
     }
 
     #[test]

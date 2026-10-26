@@ -24,15 +24,27 @@ A firmware for the [Urchin Keyboard](https://github.com/duckyb/urchin), to use w
 
 ![urchin](../../images/urchin.png)
 
+## [rmk-zsa-planck-ez](https://github.com/atvari-eu/rmk-zsa-planck-ez)
+
+RMK firmware for the ZSA Planck EZ 40% ortholinear keyboard, with Vial keymap editing and support for the Glow underglow variant.
+
+![zsa-planck-ez](../../images/zsa-planck-ez.webp)
+
+## [rmk-zsa-voyager](https://github.com/jpds/rmk-zsa-voyager)
+
+![zsa-voyager](../../images/zsa-voyager.webp)
+
 ## [zx66](https://github.com/zongxin1993/zx66-keybord)
 
 A modular split 66-key keyboard
 
 <img src="https://raw.githubusercontent.com/zongxin1993/zx66-keybord/refs/heads/master/Images/zx66-keybord_03.jpg">
 
-## [rmk-zsa-voyager](https://github.com/jpds/rmk-zsa-voyager)
+## [Lunakbd](https://github.com/gbPagano/lunakbd)
 
-![zsa-voyager](../../images/zsa-voyager.webp)
+A split wireless keyboard designed from scratch: schematic and PCB in KiCad, case in FreeCAD, and firmware built on RMK running on nice!nano (nRF52840) controllers. The two halves connect over BLE to a central USB dongle.
+
+![Lunakbd](https://raw.githubusercontent.com/gbPagano/lunakbd/main/photos/up-down-4-web.jpg)
 
 ## Show your keyboard!
 

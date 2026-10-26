@@ -78,6 +78,8 @@ pub use keyboard::auto_mouse_layer::AutoMouseLayerRunner;
 use keymap::KeyMap;
 pub use keymap::KeymapData;
 pub use rmk_macro as macros;
+// Spells a macro's text as `MacroOp::Char`s: `text!("hi")`.
+pub use rmk_macro::text;
 pub use rmk_types as types;
 #[cfg(feature = "_ble")]
 pub use trouble_host::prelude::*;
@@ -111,7 +113,6 @@ pub mod hid;
 pub mod host;
 pub mod input_device;
 pub mod keyboard;
-pub mod keyboard_macros;
 pub mod keymap;
 pub mod layout_macro;
 pub mod light;
@@ -140,8 +141,9 @@ pub async fn initialize_keymap<
     const COL: usize,
     const NUM_LAYER: usize,
     const NUM_ENCODER: usize,
+    const NUM_TOUCHPAD: usize,
 >(
-    data: &'a mut KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER>,
+    data: &'a mut KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER, NUM_TOUCHPAD>,
     behavior_config: &'a mut config::BehaviorConfig,
     positional_config: &'a PositionalConfig<ROW, COL>,
 ) -> KeyMap<'a> {
@@ -156,13 +158,14 @@ pub async fn initialize_keymap_and_storage<
     const COL: usize,
     const NUM_LAYER: usize,
     const NUM_ENCODER: usize,
+    const NUM_TOUCHPAD: usize,
 >(
-    data: &'a mut KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER>,
+    data: &'a mut KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER, NUM_TOUCHPAD>,
     flash: F,
     storage_config: &config::StorageConfig,
     behavior_config: &'a mut config::BehaviorConfig,
     positional_config: &'a PositionalConfig<ROW, COL>,
-) -> (KeyMap<'a>, Storage<F, ROW, COL, NUM_LAYER, NUM_ENCODER>) {
+) -> (KeyMap<'a>, Storage<F>) {
     // `mut` is only taken by the host build's keymap restore below.
     #[cfg_attr(not(feature = "host"), allow(unused_mut))]
     let mut storage = Storage::new(flash, storage_config).await;

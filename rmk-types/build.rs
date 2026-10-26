@@ -61,7 +61,11 @@ fn generate_constants(bc: &BuildConstants, config: &KeyboardTomlConfig) -> Strin
     ));
     lines.push(format!("pub const COMBO_MAX_NUM: usize = {};", bc.combo_max_num));
     lines.push(format!("pub const COMBO_MAX_LENGTH: usize = {};", bc.combo_max_length));
-    lines.push(format!("pub const MACRO_SPACE_SIZE: usize = {};", bc.macro_space_size));
+    lines.push(format!("pub const MACRO_MAX_NUM: usize = {};", bc.macro_max_num));
+    lines.push(format!(
+        "pub const MACRO_CHUNK_SIZE: usize = {};",
+        rmk_config::MACRO_CHUNK_SIZE
+    ));
     if env::var("CARGO_FEATURE_CUSTOM_MESSAGE").is_ok() {
         lines.push(format!(
             "pub const CUSTOM_MESSAGE_MAX_SIZE: usize = {};",
@@ -103,6 +107,7 @@ fn generate_constants(bc: &BuildConstants, config: &KeyboardTomlConfig) -> Strin
         bc.split_battery_peripheral_user_descriptions
     ));
     lines.push(format!("pub const NUM_BLE_PROFILE: usize = {};", bc.ble_profiles_num));
+    lines.push(format!("pub const BLE_USE_2M_PHY: bool = {};", bc.ble_use_2m_phy));
     lines.push(format!(
         "pub const SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS: u32 = {};",
         bc.split_central_sleep_timeout_seconds
@@ -134,8 +139,8 @@ fn generate_constants(bc: &BuildConstants, config: &KeyboardTomlConfig) -> Strin
         protocol_limits::MAX_MORSE_SIZE
     ));
     lines.push(format!(
-        "pub const MAX_MACRO_DATA_SIZE: usize = {};",
-        protocol_limits::MAX_MACRO_DATA_SIZE
+        "pub const MAX_MACRO_SPACE_SIZE: usize = {};",
+        protocol_limits::MAX_MACRO_SPACE_SIZE
     ));
 
     if is_host {
@@ -149,22 +154,19 @@ fn generate_constants(bc: &BuildConstants, config: &KeyboardTomlConfig) -> Strin
             protocol_limits::MAX_MORSE_SIZE
         ));
         lines.push(format!(
-            "pub const MACRO_DATA_SIZE: usize = {};",
-            protocol_limits::MAX_MACRO_DATA_SIZE
+            "pub const MACRO_SPACE_SIZE: usize = {};",
+            protocol_limits::MAX_MACRO_SPACE_SIZE
         ));
     } else {
         // Firmware: per-item constants from keyboard.toml / defaults.
         lines.push(format!("pub const COMBO_SIZE: usize = {};", bc.combo_max_length));
         lines.push(format!("pub const MORSE_SIZE: usize = {};", bc.max_patterns_per_key));
-        lines.push(format!(
-            "pub const MACRO_DATA_SIZE: usize = {};",
-            bc.protocol_macro_chunk_size
-        ));
+        lines.push(format!("pub const MACRO_SPACE_SIZE: usize = {};", bc.macro_space_size));
         // Firmware Vec sizes must not exceed protocol ceilings (rynk builds only).
         if env::var("CARGO_FEATURE_RYNK").is_ok() {
             lines.push("const _: () = assert!(COMBO_SIZE <= MAX_COMBO_SIZE, \"firmware COMBO_SIZE exceeds protocol ceiling MAX_COMBO_SIZE\");".to_string());
             lines.push("const _: () = assert!(MORSE_SIZE <= MAX_MORSE_SIZE, \"firmware MORSE_SIZE exceeds protocol ceiling MAX_MORSE_SIZE\");".to_string());
-            lines.push("const _: () = assert!(MACRO_DATA_SIZE <= MAX_MACRO_DATA_SIZE, \"firmware MACRO_DATA_SIZE exceeds protocol ceiling MAX_MACRO_DATA_SIZE\");".to_string());
+            lines.push("const _: () = assert!(MACRO_SPACE_SIZE <= MAX_MACRO_SPACE_SIZE, \"firmware MACRO_SPACE_SIZE exceeds protocol ceiling MAX_MACRO_SPACE_SIZE\");".to_string());
         }
     }
 

@@ -12,7 +12,7 @@ use rmk_types::morse::{Morse, MorseProfile};
 #[cfg(feature = "rynk")]
 use rmk_types::protocol::rynk::BehaviorConfig;
 
-use crate::event::KeyboardEventPos;
+use crate::event::KeyboardEventSource;
 use crate::keyboard::combo::Combo;
 use crate::keymap::KeyMap;
 #[cfg(feature = "storage")]
@@ -34,7 +34,7 @@ impl<'a> KeyboardContext<'a> {
 
     pub fn get_action(&self, layer: u8, row: u8, col: u8) -> KeyAction {
         self.keymap
-            .get_action_at(KeyboardEventPos::key_pos(col, row), layer as usize)
+            .get_action_at(KeyboardEventSource::key_pos(col, row), layer as usize)
     }
 
     pub fn get_action_flat(&self, index: usize) -> KeyAction {
@@ -53,7 +53,7 @@ impl<'a> KeyboardContext<'a> {
 
     pub async fn set_action(&self, layer: u8, row: u8, col: u8, action: KeyAction) -> Result<(), ()> {
         self.keymap
-            .set_action_at(KeyboardEventPos::key_pos(col, row), layer as usize, action);
+            .set_action_at(KeyboardEventSource::key_pos(col, row), layer as usize, action);
         #[cfg(feature = "storage")]
         store(StorageItem::Keymap {
             layer,
@@ -113,25 +113,6 @@ impl<'a> KeyboardContext<'a> {
         #[cfg(not(feature = "storage"))]
         let _ = written;
         Ok(())
-    }
-
-    pub fn read_macro_buffer(&self, offset: usize, target: &mut [u8]) {
-        self.keymap.read_macro_buffer(offset, target);
-    }
-
-    /// Vial's protocol expects every set to be followed by a full-buffer save.
-    pub async fn write_macro_buffer(&self, offset: usize, data: &[u8]) -> Result<(), ()> {
-        self.keymap.write_macro_buffer(offset, data);
-        #[cfg(feature = "storage")]
-        {
-            store(StorageItem::MacroData(self.keymap.get_macro_sequences())).await?;
-            info!("Saved macros to storage");
-        }
-        Ok(())
-    }
-
-    pub fn reset_macro_buffer(&self) {
-        self.keymap.reset_macro_buffer();
     }
 
     pub fn with_combos<R>(&self, f: impl FnOnce(&[Option<Combo>]) -> R) -> R {

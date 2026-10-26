@@ -1,5 +1,6 @@
 #[cfg(all(feature = "dongle", feature = "custom_message"))]
 use postcard::experimental::max_size::MaxSize;
+use rmk_types::battery::BatteryStatus;
 use trouble_host::prelude::*;
 use usbd_hid::descriptor::{AsInputReport, SerializedDescriptor};
 
@@ -43,6 +44,41 @@ pub(crate) struct Server {
     pub(crate) device_config_service: DeviceConfigurationService,
     #[cfg(feature = "dongle")]
     pub(crate) dongle_event_service: DongleEventService,
+}
+
+impl Server<'_> {
+    pub(crate) fn refresh_battery_level(&self, handle: u16) {
+        let (attribute, status) = if handle == self.battery_service.level.handle {
+            (
+                self.battery_service.level,
+                crate::input_device::battery::current_battery_status(),
+            )
+        } else {
+            #[cfg(feature = "split")]
+            {
+                let Some(slot) = self
+                    .peripheral_battery_services
+                    .levels
+                    .iter()
+                    .position(|level| level.handle == handle)
+                else {
+                    return;
+                };
+                (
+                    self.peripheral_battery_services.levels[slot],
+                    crate::split::driver::current_peripheral_battery_status(crate::SPLIT_BATTERY_PERIPHERAL_IDS[slot])
+                        .unwrap_or(BatteryStatus::Unavailable),
+                )
+            }
+            #[cfg(not(feature = "split"))]
+            return;
+        };
+        if let BatteryStatus::Available { level: Some(level), .. } = status
+            && let Err(e) = self.set(&attribute, &level)
+        {
+            warn!("Failed to refresh battery level: {:?}", e);
+        }
+    }
 }
 
 /// One postcard-encoded [`crate::dongle::event::DongleEvent`] per notification.

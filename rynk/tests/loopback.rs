@@ -18,10 +18,12 @@ use rmk::core_traits::Runnable;
 use rmk::event::{LayerChangeEvent, publish_event};
 use rmk::host::HostService as RynkService;
 use rmk::keymap::{KeyMap, KeymapData};
-use rmk_types::action::KeyAction;
+use rmk_types::action::{Action, KeyAction};
 use rmk_types::combo::Combo;
-use rmk_types::constants::{MACRO_DATA_SIZE, RYNK_BUFFER_SIZE};
-use rmk_types::protocol::rynk::{MacroData, ProtocolVersion, RYNK_MAX_PAYLOAD_SIZE, RynkError, StorageResetMode};
+use rmk_types::constants::RYNK_BUFFER_SIZE;
+use rmk_types::keyboard_macros::MacroOp;
+use rmk_types::keycode::{HidKeyCode, KeyCode};
+use rmk_types::protocol::rynk::{ProtocolVersion, RYNK_MAX_PAYLOAD_SIZE, RynkError, StorageResetMode};
 use rynk::layout::{Key, Rect, Variant};
 use rynk::{Client, LayoutInfo, RynkDevice, RynkHostError, TopicEvent};
 
@@ -66,7 +68,7 @@ async fn client_against_run_session() {
     let mut behavior = BehaviorConfig::default();
     let positional: PositionalConfig<2, 2> = PositionalConfig::default();
     let mut data: KeymapData<2, 2, 2, 0> = KeymapData::new([[[KeyAction::No; 2]; 2]; 2]);
-    let mut storage = rmk::storage::Storage::<_, 2, 2, 2, 0>::new(
+    let mut storage = rmk::storage::Storage::new(
         rmk::storage::async_flash_wrapper(rmk::test_support::InMemoryFlash::<16384, 4096, 4>::new()),
         &rmk::config::StorageConfig::default(),
     )
@@ -160,14 +162,22 @@ async fn client_against_run_session() {
         client.set_behavior(beh).await.unwrap();
         assert_eq!(client.get_behavior().await.unwrap(), beh);
 
-        // Macro zero-fill chunk contract.
-        let mut macro_bytes: heapless::Vec<u8, MACRO_DATA_SIZE> = heapless::Vec::new();
-        macro_bytes.extend_from_slice(&[1, 2, 3, 4]).unwrap();
-        client.set_macro(0, MacroData { data: macro_bytes }).await.unwrap();
-        let got = client.get_macro(0).await.unwrap();
-        assert_eq!(got.data.len(), caps.macro_chunk_size as usize, "reply is a full chunk");
-        assert_eq!(&got.data[..4], &[1, 2, 3, 4], "written prefix preserved");
-        assert!(got.data[4..].iter().all(|&b| b == 0), "tail zero-filled past the write");
+        // A macro travels whole and comes back as written; an unset slot is empty.
+        assert!(caps.macros_writable, "storage is on, so macros are writable");
+        assert_eq!(client.read_macro(1).await.unwrap(), []);
+        let ops = [
+            MacroOp::Tap(Action::Key(KeyCode::Hid(HidKeyCode::A))),
+            MacroOp::Delay(20),
+            MacroOp::Char(b'z'),
+            MacroOp::PauseForRelease,
+        ];
+        client.write_macro(1, &ops).await.unwrap();
+        assert_eq!(client.read_macro(1).await.unwrap(), ops);
+        let out_of_range = client.read_macro(caps.max_macros).await;
+        assert!(
+            matches!(out_of_range, Err(RynkHostError::Rejected(RynkError::Invalid))),
+            "expected Rejected(Invalid), got {out_of_range:?}"
+        );
 
         // Combo round-trip, guarded on advertised count.
         if caps.max_combos > 0 {
