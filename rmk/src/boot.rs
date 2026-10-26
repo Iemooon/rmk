@@ -1,4 +1,34 @@
+// Applications with persistent DFU markers opt in before USB starts.
+#[cfg(feature = "storage")]
+static PREPARE_BOOTLOADER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+#[cfg(feature = "storage")]
+static BOOTLOADER_REQUEST: embassy_sync::signal::Signal<crate::RawMutex, ()> = embassy_sync::signal::Signal::new();
+
+/// Route software bootloader requests to the application's storage-aware worker.
+#[cfg(feature = "storage")]
+pub fn install_bootloader_prepare() {
+    PREPARE_BOOTLOADER.store(true, core::sync::atomic::Ordering::Release);
+}
+
+/// Wait for a software request. Requests remain latched until the worker starts.
+#[cfg(feature = "storage")]
+pub async fn wait_for_bootloader_request() {
+    BOOTLOADER_REQUEST.wait().await;
+}
+
+/// Request bootloader entry; opted-in applications prepare persistent state first.
 pub fn jump_to_bootloader() {
+    #[cfg(feature = "storage")]
+    if PREPARE_BOOTLOADER.load(core::sync::atomic::Ordering::Acquire) {
+        BOOTLOADER_REQUEST.signal(());
+        return;
+    }
+    jump_to_bootloader_after_prepare();
+}
+
+/// Final hardware jump. The marker worker calls this only after verified cleanup.
+/// Do not use this to bypass an installed preparation worker from host commands.
+pub fn jump_to_bootloader_after_prepare() {
     #[cfg(feature = "adafruit_bl")]
     // Reference: https://github.com/adafruit/Adafruit_nRF52_Bootloader/blob/d6b28e66053eea467166f44875e3c7ec741cb471/src/main.c#L107
     embassy_nrf::pac::POWER
@@ -48,4 +78,16 @@ pub(crate) fn reboot_keyboard() {
 
     #[cfg(feature = "_esp_ble")]
     esp_hal::system::software_reset();
+}
+
+
+#[cfg(all(test, feature = "storage"))]
+mod tests {
+    #[test]
+    fn software_bootloader_request_waits_for_application_preparation() {
+        super::install_bootloader_prepare();
+        super::jump_to_bootloader();
+        // The request must stay latched until the application worker is ready.
+        crate::test_support::test_block_on(super::wait_for_bootloader_request());
+    }
 }
