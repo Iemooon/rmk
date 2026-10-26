@@ -518,7 +518,8 @@ fn expectation(value: &Value) -> Result<TokenStream2, String> {
                         [#(::rmk::types::steno::StenoKey::#keys),*];
                     let mut keys = [0u8; 8];
                     for key in chord {
-                        keys[(key.0 / 8) as usize] |= 0x80 >> (key.0 % 8);
+                        let idx = key.chart_index() as usize;
+                        keys[idx / 8] |= 0x80 >> (idx % 8);
                     }
                     ::rmk::hid::StenoReport { keys }
                 }))
