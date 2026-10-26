@@ -529,11 +529,12 @@ fn parse_numeric_arg(raw: &str, kind: &str) -> u8 {
 
 /// Case-insensitively match a token against an enum's variant names,
 /// expanding the match to that variant's identifier.
-fn match_variant(names: &[&str], lower: &str) -> Option<Ident> {
+fn match_variant(names: &[&str], token: &str) -> Option<Ident> {
     names
         .iter()
-        .find(|&&v| v.to_lowercase() == lower)
-        .map(|v| format_ident!("{v}"))
+        .copied()
+        .find(|name| name.eq_ignore_ascii_case(token))
+        .map(|name| format_ident!("{name}"))
 }
 
 pub(crate) fn get_key_with_alias(key: String) -> Ident {
