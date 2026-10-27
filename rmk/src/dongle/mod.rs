@@ -504,10 +504,11 @@ where
                     match postcard::from_bytes::<crate::custom_message::CustomMessage>(data) {
                         // An end of the chain: it delivers what names it and has nowhere
                         // to relay the rest to.
-                        Ok(message) => match message.target {
-                            crate::custom_message::CustomMessageTarget::Dongle => publish_event(message),
-                            _ => (),
-                        },
+                        Ok(message) => {
+                            if message.target == crate::custom_message::CustomMessageTarget::Dongle {
+                                publish_event(message);
+                            }
+                        }
                         Err(_) => warn!("[dongle] undecodable custom message dropped"),
                     }
                 } else if chars.event.as_ref().is_some_and(|ch| ch.handle == handle) {
