@@ -120,6 +120,7 @@ pub mod layout_macro;
 pub mod light;
 pub mod matrix;
 pub mod processor;
+pub mod receiver;
 #[cfg(feature = "split")]
 pub mod split;
 pub mod state;

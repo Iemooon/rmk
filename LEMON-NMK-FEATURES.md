@@ -18,6 +18,8 @@ Vial 解锁设置仍由各固件工程配置。Gazell 无线收发实现也仍�
 
 | 特性 | 适用范围 | 如何开启 | 源码入口 |
 | --- | --- | --- | --- |
+| USB 唤醒及重连报告保护 | 使用 USB HID 的 BLE/Gazell 应用 | USB writer 自动使用 | [usb/mod.rs](rmk/src/usb/mod.rs)、[state.rs](rmk/src/state.rs) |
+| 完整状态接收队列与超时松键 | Gazell 等完整按键状态接收器 | 应用显式使用 `SnapshotQueue` | [receiver.rs](rmk/src/receiver.rs)、[接入说明](LEMON-NMK-RECEIVER.md) |
 | 动态层控制接口 | 轨迹球、鼠标等输入处理器，与 BLE/Gazell 无关 | 应用调用接口，无单独 feature | [keymap.rs](rmk/src/keymap.rs) |
 | BLE 分体断连松键 | BLE 分体连接 | 启用 BLE 芯片及 `split`，对应路径自动使用 | [driver.rs](rmk/src/split/driver.rs)、[pressed.rs](rmk/src/split/pressed.rs) |
 | 离线清配对后重新发现 | BLE 分体中央端 | 原有清配对操作触发 | [central.rs](rmk/src/split/ble/central.rs)、[keyboard.rs](rmk/src/keyboard.rs) |
@@ -25,6 +27,32 @@ Vial 解锁设置仍由各固件工程配置。Gazell 无线收发实现也仍�
 | 软件进入 DFU 前清持久标记 | **52833 窗口任务的配套行为** | 与上项一起启用，不需要修改 Vial 协议 | [boot.rs](rmk/src/boot.rs)、[接入说明](LEMON-NMK-DFU.md) |
 | 稳定存储格式基线 | 启用存储的应用 | 自动使用分支中的基线文件 | [STORAGE-BASE-COMMIT](STORAGE-BASE-COMMIT)、[build.rs](rmk/build.rs) |
 | BLE 并发任务减少临时栈占用 | BLE 键盘中央端 | 自动使用，不改变协议与任务调度顺序 | [ble/mod.rs](rmk/src/ble/mod.rs) |
+
+### USB 唤醒与重连保护（2026-10-27）
+
+从 `dongle-tft-st7789` 的 `vendor/rmk-ble`、`vendor/rmk-gazell` 公共补丁迁入。
+USB 休眠时保留已取出的报告，按顺序等待恢复；端点暂时 Disabled 时保留同一报告重试。
+拔插、reset/unconfigure 或离开 USB 输出时推进会话编号，取消旧会话尚未完成的报告，
+避免重新连接后补发旧按下。正常 suspend/resume 不取消报告。
+默认用于 USB 报告发送路径，BLE/Gazell 应用均可使用，不改变无线帧或存储格式。
+队列仍有容量限制和背压；主机不允许远程唤醒时不会强行唤醒，其他发送错误仍记录后丢弃。
+
+### Gazell 通用完整状态队列（2026-10-27）
+
+新增 `rmk::receiver::SnapshotQueue<BYTES, SOURCES, CAP>`，从 TFT 工程的
+Gazell 状态机抽取，并把固定两端扩展为任意编译期发射端数量。无需新增 Cargo feature，
+只有应用实例化并接入后才生效，不自动替换任何键盘的接收流程。
+
+- 使用单调毫秒接收时间和应用指定的超时；重复合法状态刷新存活，非法长度不刷新。
+- 超时丢弃该来源的积压状态，产生一次全零松键状态，其他来源继续保序。
+- 正常容量内保留连续按下/松开；溢出时按各来源最新状态恢复，无法补回已丢失的短按。
+- 重连且未溢出时保留先松开再按下的边界；溢出恢复优先保证最终状态。
+- `seen_within` 的接收历史独立于松键超时，可供连接指示使用。
+
+仅适用于固定长度的完整按键状态，且全零表示松开；不适用于增量事件、相对鼠标位移或
+把电池/序号等 RF 头部直接放进状态。应用负责验证帧、排空 RF FIFO、同步访问、消抖、
+矩阵映射，以及完整发布一个快照的所有变化后再处理下一个。详见
+[接入说明](LEMON-NMK-RECEIVER.md)。这不改变既有 Gazell 地址、频道、协议或接线。
 
 ### 动态层
 
@@ -94,6 +122,27 @@ cargo nextest run --manifest-path rmk/Cargo.toml --config-file .config/nextest.t
 并验证输入、配对、重连、窗口与 Vial 进入 DFU、重复刷写及 USB 重新枚举。
 旧 common 实现的现场反馈不作为分支内新模块的实物验收记录。
 
+### 本次接收器可靠性补丁验证（2026-10-27）
+
+代码范围：`e8e1e714e` 之后本次提交的 USB 与完整状态队列补丁。
+
+| 检查 | 结果 | 范围 |
+| --- | --- | --- |
+| Vial/BLE：`split,vial,storage,async_matrix,_ble` | 648 项通过 | 主机回归，含 10 项队列测试及会话测试 |
+| Vial 无 BLE：`split,vial,storage,async_matrix` | 594 项通过 | 主机回归 |
+| Rynk/BLE：`rynk,_ble,split,async_matrix,storage` | 695 项通过 | 主机回归 |
+| `python scripts/check_usb_wakeup.py` | 7 项通过 | 提取实际生产 writer，模拟端点和时钟 |
+| 旧 writer 负对照 | 同一工具 4 项失败、3 项通过 | 确认能够检出旧行为，不是编译失败 |
+| 去掉队列超时/溢出恢复的负对照 | 分别 5 项、2 项失败 | 验证测试能检出保护缺失 |
+| 52840 BLE，`thumbv7em-none-eabihf` release 库检查 | 通过 | `vial,storage,nrf52840_ble,embassy-nrf/nrf52840` |
+| 52833 无 BLE，同目标 release 库检查 | 通过 | `vial,storage,embassy-nrf/nrf52833` |
+
+ARM 命令使用 `cargo check --manifest-path rmk/Cargo.toml --target thumbv7em-none-eabihf
+--release --no-default-features --features <features>`。库检查不包括最终固件链接和分区验收。
+USB 工具已接入 `scripts/test_all.sh` 和 `.github/ci/test.sh`；未运行完整 CI 脚本。
+本次未迁移消费工程依赖、未构建最终键盘固件、未烧录或做实机验证。
+不修改存储格式、不推进基线。会话编号使用 RMK 原有互斥机制，不要求额外原子指令能力。
+
 ## 后续维护规则
 
 每次修改本分支时，在同一提交或同一 PR 中完成：
@@ -112,6 +161,7 @@ cargo nextest run --manifest-path rmk/Cargo.toml --config-file .config/nextest.t
 
 | 日期 | 提交或事件 | 变更 |
 | --- | --- | --- |
+| 2026-10-27 | 接收器可靠性补丁 | 迁入 USB 唤醒/重连保护，新增可复用完整状态队列和回归；无存储格式变化 |
 | 2026-10-27 | `c5586b1e5`、`bd07c8535` | 合入动态层和上游更新，推进存储格式基线 |
 | 2026-10-27 | `e3623fee5` | 明确 BLE/NMK 统一分支及公共补丁范围 |
 | 2026-10-27 | `6107d5861` | 新增 52833 可选 DFU 窗口及配套清标记任务 |

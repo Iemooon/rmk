@@ -15,6 +15,21 @@ use crate::event::{ConnectionStatusChangeEvent, publish_event};
 pub(crate) static CONNECTION_STATUS: Mutex<RawMutex, Cell<ConnectionStatus>> =
     Mutex::new(Cell::new(ConnectionStatus::new()));
 
+// In-flight USB reports must not survive a reset, unplug, or output switch.
+static USB_REPORT_EPOCH: Mutex<RawMutex, Cell<u32>> = Mutex::new(Cell::new(0));
+pub(crate) fn usb_report_epoch() -> u32 {
+    USB_REPORT_EPOCH.lock(|epoch| epoch.get())
+}
+
+// Suspend/resume keeps the same USB session; reset/unplug/routing away does not.
+fn usb_report_session_ended(prev: ConnectionStatus, new: ConnectionStatus) -> bool {
+    let was_usb_ready = matches!(prev.usb, UsbState::Configured | UsbState::Suspended);
+    let is_usb_ready = matches!(new.usb, UsbState::Configured | UsbState::Suspended);
+    let left_usb =
+        prev.decide_active() == Some(ConnectionType::Usb) && new.decide_active() != Some(ConnectionType::Usb);
+    (was_usb_ready && !is_usb_ready) || left_usb
+}
+
 pub(crate) fn active_transport() -> Option<ConnectionType> {
     CONNECTION_STATUS.lock(|c| c.get().decide_active())
 }
@@ -58,6 +73,9 @@ pub(crate) fn update_status(f: impl FnOnce(&mut ConnectionStatus)) {
         f(&mut new);
         if prev == new {
             return None;
+        }
+        if usb_report_session_ended(prev, new) {
+            USB_REPORT_EPOCH.lock(|epoch| epoch.set(epoch.get().wrapping_add(1)));
         }
         c.set(new);
         Some((prev, new))
@@ -199,6 +217,23 @@ mod tests {
         #[cfg(feature = "steno")]
         assert!(matches!(ch.try_receive(), Ok(Report::StenoReport(r)) if r.keys == [0; 8]));
         assert!(ch.try_receive().is_err());
+    }
+
+    #[test]
+    fn usb_epoch_advances_on_session_end_but_not_suspend_resume() {
+        let _guard = state_test_lock().lock().unwrap();
+        reset_state();
+        set_usb_state(UsbState::Configured);
+        let initial = super::usb_report_epoch();
+        set_usb_state(UsbState::Suspended);
+        set_usb_state(UsbState::Configured);
+        assert_eq!(super::usb_report_epoch(), initial);
+        set_usb_state(UsbState::Enabled);
+        assert_eq!(super::usb_report_epoch(), initial.wrapping_add(1));
+        set_usb_state(UsbState::Configured);
+        assert_eq!(super::usb_report_epoch(), initial.wrapping_add(1));
+        set_usb_state(UsbState::Disabled);
+        assert_eq!(super::usb_report_epoch(), initial.wrapping_add(2));
     }
 
     #[test]
@@ -398,5 +433,35 @@ mod tests {
         ));
 
         assert_eq!(USB_REPORT_CHANNEL.len(), crate::REPORT_CHANNEL_SIZE);
+    }
+}
+
+#[cfg(test)]
+mod usb_session_tests {
+    use super::*;
+
+    #[test]
+    fn suspend_resume_keeps_session_reset_unconfigure_and_unplug_end_it() {
+        let status = |usb| ConnectionStatus {
+            usb,
+            ..ConnectionStatus::default()
+        };
+        assert!(!usb_report_session_ended(
+            status(UsbState::Configured),
+            status(UsbState::Suspended)
+        ));
+        assert!(!usb_report_session_ended(
+            status(UsbState::Suspended),
+            status(UsbState::Configured)
+        ));
+        for old in [UsbState::Configured, UsbState::Suspended] {
+            for new in [UsbState::Enabled, UsbState::Disabled] {
+                assert!(usb_report_session_ended(status(old), status(new)));
+            }
+        }
+        assert!(!usb_report_session_ended(
+            status(UsbState::Enabled),
+            status(UsbState::Configured)
+        ));
     }
 }

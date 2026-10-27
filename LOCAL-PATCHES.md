@@ -75,3 +75,25 @@ above. No consumer is migrated merely by consolidating this library branch.
 
 These are host regression tests. They do not establish target flash/RAM fit,
 Gazell RF compatibility, BLE reconnect behavior, or physical DFU acceptance.
+
+## Receiver and USB reliability migration (2026-10-27)
+
+Migrated the TFT receiver project's USB pending-report/session invalidation
+patch into `rmk/src/usb/mod.rs` and `rmk/src/state.rs`, preserving newer upstream
+USB reset/pre-suspend handling. Added the production-writer regression harness
+in `scripts/check_usb_wakeup.py`.
+
+Added opt-in-by-use `rmk::receiver::SnapshotQueue` for decoded full-state
+receivers, generalized from the TFT project's Gazell queue to configurable
+source counts. No Gazell radio implementation, board mapping or RF parameters
+are imported. Consumer projects have not been migrated by this library change.
+See `LEMON-NMK-RECEIVER.md` for integration and overflow limitations.
+No storage format change; the existing schema baseline is retained.
+
+Validation for this migration: Vial/BLE 648, Vial without BLE 594, and
+Rynk/BLE 695 host tests passed; the extracted production USB writer passed
+7 simulations. Restoring the old writer fails 4 simulations; disabling queue
+expiry/overflow recovery fails 5/2 queue tests. Release ARM library checks
+passed for nRF52840 BLE and nRF52833 without BLE. These are not complete
+firmware links or hardware acceptance. The writer test is wired into local
+and CI test entry points; the full CI scripts were not run.

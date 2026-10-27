@@ -75,27 +75,63 @@ pub(crate) struct UsbKeyboardWriter<'a, 'd, D: Driver<'d>> {
 impl<'d, D: Driver<'d>> UsbKeyboardWriter<'_, 'd, D> {
     pub(crate) async fn run_writer(&mut self) -> ! {
         loop {
-            let report = USB_REPORT_CHANNEL.receive().await;
-
-            // EndpointError::Disabled never fires on non-OTG STM32/GD32
-            // peripherals during suspend, so signal wakeup proactively when a
-            // USB report is pending and the bus is suspended.
-            if current_usb_state() == UsbState::Suspended {
-                USB_REMOTE_WAKEUP.signal(());
-                continue;
-            }
-
-            if let Err(e) = self.write_report(&report).await {
-                error!("Failed to send report: {:?}", e);
-
-                // Belt-and-braces for OTG peripherals where Disabled is the
-                // correct suspend indicator: signal wakeup, give the host a
-                // moment, then retry the same report once.
-                if let HidError::UsbEndpointError(EndpointError::Disabled) = e {
-                    USB_REMOTE_WAKEUP.signal(());
-                    embassy_time::Timer::after_millis(500).await;
-                    if let Err(e) = self.write_report(&report).await {
-                        error!("Failed to send report after wakeup: {:?}", e);
+            // Snapshot the session in the same poll that removes the report.
+            // Taking it before an await would discard the first NEW-session key.
+            let (report, epoch) = core::future::poll_fn(|cx| {
+                USB_REPORT_CHANNEL
+                    .poll_receive(cx)
+                    .map(|report| (report, crate::state::usb_report_epoch()))
+            })
+            .await;
+            let mut wake_requested = false;
+            loop {
+                // A report belongs to its original USB/output session. Suspend
+                // does not change the epoch; unplug/reset/output switch does.
+                if crate::state::usb_report_epoch() != epoch {
+                    break;
+                }
+                match current_usb_state() {
+                    UsbState::Suspended => {
+                        if !wake_requested {
+                            USB_REMOTE_WAKEUP.signal(());
+                            wake_requested = true;
+                        }
+                        embassy_time::Timer::after_millis(5).await;
+                        continue;
+                    }
+                    UsbState::Configured => {}
+                    _ => break,
+                }
+                // Also cancel a pending endpoint write if the old session ends.
+                let changed = async {
+                    while crate::state::usb_report_epoch() == epoch {
+                        embassy_time::Timer::after_millis(5).await;
+                    }
+                };
+                let send = async {
+                    let mut write = core::pin::pin!(self.write_report(&report));
+                    core::future::poll_fn(|cx| {
+                        if crate::state::usb_report_epoch() != epoch {
+                            return core::task::Poll::Ready(None);
+                        }
+                        core::future::Future::poll(write.as_mut(), cx).map(Some)
+                    })
+                    .await
+                };
+                match select(send, changed).await {
+                    Either::Second(_) | Either::First(None) | Either::First(Some(Ok(_))) => break,
+                    Either::First(Some(Err(HidError::UsbEndpointError(EndpointError::Disabled)))) => {
+                        // Suspend can race the state check. Keep THIS report,
+                        // yield, then retry in order rather than dropping it.
+                        if !wake_requested {
+                            USB_REMOTE_WAKEUP.signal(());
+                            wake_requested = true;
+                        }
+                        embassy_time::Timer::after_millis(5).await;
+                    }
+                    Either::First(Some(Err(e))) => {
+                        error!("Failed to send report: {:?}", e);
+                        break;
                     }
                 }
             }

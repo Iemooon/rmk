@@ -10,6 +10,9 @@ command -v cargo-nextest >/dev/null 2>&1 || {
 
 source "$(dirname "${BASH_SOURCE[0]}")/../.github/ci/_lib.sh"
 
+# Exercise the production USB writer with controlled suspend/reset races.
+python3 "$repo_root/scripts/check_usb_wakeup.py"
+
 # Each crate in this repo is its own cargo workspace, so nextest's default
 # `<workspace>/.config/nextest.toml` lookup would miss our shared config at
 # repo root. Pass it explicitly.

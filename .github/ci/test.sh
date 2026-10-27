@@ -6,6 +6,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 export CARGO_NET_OFFLINE=false
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$target_root/test}"
 
+# Exercise the production USB writer with controlled suspend/reset races.
+python3 "$repo_root/scripts/check_usb_wakeup.py"
+
 # Each crate is its own cargo workspace in this repo, so nextest's default
 # `<workspace>/.config/nextest.toml` lookup would miss our shared config at
 # repo root. Pass it explicitly.
