@@ -9,7 +9,7 @@ The repo is a Cargo monorepo:
 - `rmk/`: firmware runtime.
 - `rmk-config/`: TOML parsing.
 - `rmk-macro/`: procedural macros.
-- `rmk-types/`: shared types. 
+- `rmk-types/`: shared types.
 - `rynk/`: separate workspace for host clients and transports.
 - `examples/use_config/` and `examples/use_rust/`: board firmware using TOML configuration or Rust APIs.
 - `rmk/tests/scenarios/` and `rmk/tests/integration/`: behavioral tests.
@@ -42,11 +42,11 @@ Use stable Rust and install `cargo-nextest`. Run scripts from the repository roo
 
 ## Testing Guidelines
 
-- Read `rmk/tests/scenarios/README.md` before adding scenarios. 
-- TOML cases expand into ordinary Rust tests. 
+- Read `rmk/tests/scenarios/README.md` before adding scenarios.
+- TOML cases expand into ordinary Rust tests.
 - Name cases after the behavior they verify.
-- Reuse board fixtures, 
-- Confirm regressions fail without the fix. 
+- Reuse board fixtures.
+- Confirm regressions fail without the fix.
 
 Select feature coverage from `RMK_TEST_FEATURESETS` in `.github/ci/_lib.sh`. Distinguish simulator results from physical hardware validation.
 
