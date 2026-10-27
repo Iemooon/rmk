@@ -109,10 +109,11 @@ impl<'stack, 'server, 'c, P: PacketPool> SplitReader for BleSplitPeripheralDrive
                                 event.with_data(|_, data| match postcard::from_bytes::<CustomMessage>(data) {
                                     // An end of the chain: it delivers what names it and
                                     // has nowhere to relay the rest to.
-                                    Ok(message) => match message.target {
-                                        CustomMessageTarget::Peripherals => publish_event(message),
-                                        _ => (),
-                                    },
+                                    Ok(message) => {
+                                        if message.target == CustomMessageTarget::Peripherals {
+                                            publish_event(message);
+                                        }
+                                    }
                                     Err(_) => warn!("[split] undecodable custom message dropped"),
                                 });
                             } else {
