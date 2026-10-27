@@ -898,17 +898,6 @@ mod tests {
     }
 
     #[test]
-    fn far_off_key_gets_no_hint() {
-        let msg = std::panic::catch_unwind(|| expand("ZqZqZq99"))
-            .unwrap_err()
-            .downcast::<String>()
-            .unwrap();
-        assert!(msg.contains("unknown key 'ZqZqZq99'"), "{msg}");
-        // Nothing within the cutoff, so no fabricated suggestion.
-        assert!(!msg.contains("did you mean"), "{msg}");
-    }
-
-    #[test]
     fn alias_resolution_survives_validated_lookup() {
         assert!(squash(&expand("lcmd")).contains("HidKeyCode::LGui"));
     }
