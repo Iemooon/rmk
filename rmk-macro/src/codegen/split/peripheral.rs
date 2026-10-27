@@ -640,6 +640,9 @@ fn expand_split_peripheral_entry(
                 ::rmk::split::peripheral::run_rmk_split_peripheral(#uart_instance)
             };
             let mut tasks = vec![device_task, peripheral_run];
+            if !processors.is_empty() {
+                tasks.push(processor_task);
+            }
             tasks.extend(registered_processors);
             if let Some(t) = &watchdog_task {
                 tasks.push(t.clone());
@@ -783,4 +786,50 @@ pub(crate) fn expand_peripheral_input_device_config(
     }
 
     (initializations, devices, processors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serial_peripheral_runs_battery_processors() {
+        let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../examples/use_config/rp2040_split/keyboard.toml");
+        let source = std::fs::read_to_string(example).unwrap();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rmk-serial-battery-{unique}.toml"));
+        std::fs::write(
+            &path,
+            format!(
+                r#"{source}
+[split.peripheral.battery]
+charge_state = {{ pin = "PIN_20", low_active = true }}
+charge_led = {{ pin = "PIN_21", low_active = false }}
+"#
+            ),
+        )
+        .unwrap();
+        let config = rmk_config::KeyboardTomlConfig::new_from_toml_path(&path);
+        std::fs::remove_file(path).unwrap();
+        let generated = expand_split_peripheral(
+            0,
+            &config.identity().unwrap(),
+            &config.hardware().unwrap(),
+            syn::parse_quote!(
+                mod keyboard {}
+            ),
+            &Some(vec!["split".into()]),
+            None,
+        )
+        .to_string();
+        assert!(generated.contains("BatteryProcessor :: charging_only"));
+        assert!(
+            generated.contains("run_all ! (battery_processor , charge_led_processor)"),
+            "battery processors were created but never run"
+        );
+    }
 }
