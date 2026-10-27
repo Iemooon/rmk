@@ -497,15 +497,10 @@ fn morse_profile(
     let Some(name) = profile_name else {
         return quote! { ::core::primitive::u8::MAX };
     };
-    let idx = match sorted_profile_names(profiles)
-        .iter()
-        .position(|n| n == name)
-    {
+    let names = sorted_profile_names(profiles);
+    let idx = match names.iter().position(|n| n == name) {
         Some(pos) => pos as u8,
-        None => panic_unknown_profile(
-            name,
-            sorted_profile_names(profiles).iter().map(String::as_str),
-        ),
+        None => panic_unknown_profile(name, names.iter().map(String::as_str)),
     };
     quote! { #idx }
 }
