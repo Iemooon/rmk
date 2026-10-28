@@ -1,5 +1,10 @@
 #[cfg(feature = "subrating")]
 use bt_hci::cmd::le::LeSubrateRequest;
+#[cfg(feature = "ext_adv")]
+use bt_hci::cmd::le::{
+    LeClearAdvSets, LeReadNumberOfSupportedAdvSets, LeSetAdvSetRandomAddr, LeSetExtAdvData, LeSetExtAdvParams,
+    LeSetExtScanResponseData,
+};
 use bt_hci::cmd::le::{LeRand, LeReadLocalSupportedFeatures, LeSetPhy};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use bt_hci::param::Error as HciError;
@@ -60,6 +65,37 @@ pub(crate) mod sleep;
 
 #[cfg(all(feature = "subrating", feature = "_no_subrating"))]
 compile_error!("You may not enable feature `subrating` on unsupported platforms!");
+
+/// Additional HCI commands required for extended advertising.
+#[doc(hidden)]
+#[cfg(feature = "ext_adv")]
+pub trait ExtAdvCmds:
+    for<'t> ControllerCmdSync<LeSetExtAdvData<'t>>
+    + ControllerCmdSync<LeClearAdvSets>
+    + ControllerCmdSync<LeSetExtAdvParams>
+    + ControllerCmdSync<LeSetAdvSetRandomAddr>
+    + ControllerCmdSync<LeReadNumberOfSupportedAdvSets>
+    + for<'t> ControllerCmdSync<LeSetExtScanResponseData<'t>>
+{
+}
+
+#[cfg(feature = "ext_adv")]
+impl<T> ExtAdvCmds for T where
+    T: for<'t> ControllerCmdSync<LeSetExtAdvData<'t>>
+        + ControllerCmdSync<LeClearAdvSets>
+        + ControllerCmdSync<LeSetExtAdvParams>
+        + ControllerCmdSync<LeSetAdvSetRandomAddr>
+        + ControllerCmdSync<LeReadNumberOfSupportedAdvSets>
+        + for<'t> ControllerCmdSync<LeSetExtScanResponseData<'t>>
+{
+}
+
+#[cfg(not(feature = "ext_adv"))]
+#[doc(hidden)]
+pub trait ExtAdvCmds {}
+
+#[cfg(not(feature = "ext_adv"))]
+impl<T> ExtAdvCmds for T {}
 
 /// Max number of connections of a keyboard's BLE stack; a dongle sizes its
 /// own — see [`crate::dongle::Dongle`].
@@ -147,6 +183,7 @@ where
 impl<'a, C> Runnable for BleTransport<'a, C>
 where
     C: Controller
+        + ExtAdvCmds
         + ControllerCmdAsync<LeSetPhy>
         + ControllerCmdSync<LeReadLocalSupportedFeatures>
         + ControllerCmdSync<LeRand>,
@@ -179,11 +216,13 @@ where
 impl<
     'a,
     #[cfg(not(feature = "subrating"))] C: Controller
+        + ExtAdvCmds
         + ControllerCmdAsync<LeSetPhy>
         + ControllerCmdSync<LeReadLocalSupportedFeatures>
         + ControllerCmdSync<bt_hci::cmd::le::LeSetScanParams>
         + ControllerCmdSync<LeRand>,
     #[cfg(feature = "subrating")] C: Controller
+        + ExtAdvCmds
         + ControllerCmdAsync<LeSetPhy>
         + ControllerCmdSync<LeReadLocalSupportedFeatures>
         + ControllerCmdSync<bt_hci::cmd::le::LeSetScanParams>
@@ -235,7 +274,7 @@ impl<
 /// serves forever, joined with the stack runner and the sleep manager.
 async fn run_ble_keyboard<
     #[cfg(feature = "host")] 'r,
-    C: Controller + ControllerCmdAsync<LeSetPhy> + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    C: Controller + ExtAdvCmds + ControllerCmdAsync<LeSetPhy> + ControllerCmdSync<LeReadLocalSupportedFeatures>,
 >(
     stack: &Stack<'_, C, DefaultPacketPool>,
     device_config: &DeviceConfig<'static>,
@@ -318,7 +357,7 @@ async fn run_ble_keyboard<
             let timeout = deadline.saturating_duration_since(now);
 
             match select(
-                advertise(&mut peripheral, &server.server, adv, timeout),
+                advertise(&mut peripheral, &server.server, adv, None, timeout),
                 profile_manager.update_profile(),
             )
             .await
