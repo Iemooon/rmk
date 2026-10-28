@@ -1,9 +1,11 @@
+#[cfg(not(feature = "ext_adv"))]
+use bt_hci::cmd::le::LeSetScanParams;
 #[cfg(feature = "subrating")]
 use bt_hci::cmd::le::LeSubrateRequest;
 #[cfg(feature = "ext_adv")]
 use bt_hci::cmd::le::{
-    LeClearAdvSets, LeReadNumberOfSupportedAdvSets, LeSetAdvSetRandomAddr, LeSetExtAdvData, LeSetExtAdvParams,
-    LeSetExtScanResponseData,
+    LeClearAdvSets, LeExtCreateConn, LeReadNumberOfSupportedAdvSets, LeSetAdvSetRandomAddr, LeSetExtAdvData,
+    LeSetExtAdvParams, LeSetExtScanParams, LeSetExtScanResponseData,
 };
 use bt_hci::cmd::le::{LeRand, LeReadLocalSupportedFeatures, LeSetPhy};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
@@ -66,6 +68,9 @@ pub(crate) mod sleep;
 #[cfg(all(feature = "subrating", feature = "_no_subrating"))]
 compile_error!("You may not enable feature `subrating` on unsupported platforms!");
 
+#[cfg(all(feature = "pico_w_ble", feature = "ext_adv"))]
+compile_error!("Pico W does not support extended HCI advertising commands");
+
 /// Additional HCI commands required for extended advertising.
 #[doc(hidden)]
 #[cfg(feature = "ext_adv")]
@@ -97,9 +102,63 @@ pub trait ExtAdvCmds {}
 #[cfg(not(feature = "ext_adv"))]
 impl<T> ExtAdvCmds for T {}
 
+/// Additional HCI commands required for central scanning and connecting.
+#[doc(hidden)]
+#[cfg(feature = "ext_adv")]
+pub trait CentralCmds: ControllerCmdSync<LeSetExtScanParams> + ControllerCmdAsync<LeExtCreateConn> {}
+
+#[cfg(feature = "ext_adv")]
+impl<T> CentralCmds for T where T: ControllerCmdSync<LeSetExtScanParams> + ControllerCmdAsync<LeExtCreateConn> {}
+
+#[cfg(not(feature = "ext_adv"))]
+#[doc(hidden)]
+pub trait CentralCmds: ControllerCmdSync<LeSetScanParams> {}
+
+#[cfg(not(feature = "ext_adv"))]
+impl<T: ControllerCmdSync<LeSetScanParams>> CentralCmds for T {}
+
 /// Max number of connections of a keyboard's BLE stack; a dongle sizes its
 /// own — see [`crate::dongle::Dongle`].
-const CONNECTIONS_MAX: usize = crate::SPLIT_PERIPHERALS_NUM + 1;
+const CONNECTIONS_MAX: usize = crate::SPLIT_PERIPHERALS_NUM + NUM_HOST_LINKS;
+
+/// Host connections supported by the keyboard runtime.
+#[doc(hidden)]
+pub const NUM_HOST_LINKS: usize = 1;
+
+/// Default SDC Link Layer TX/RX packet size, in bytes.
+pub const SDC_PACKET_SIZE: usize = 251;
+/// Default number of SDC TX packet buffers per connection.
+pub const SDC_TX_BUFFERS: u8 = 3;
+/// Default number of SDC RX packet buffers per connection.
+pub const SDC_RX_BUFFERS: u8 = 3;
+
+/// Calculate SDC memory using the same packet size and buffer counts as the controller.
+#[doc(hidden)]
+pub const fn calculate_sdc_memory_size(
+    central_links: usize,
+    peripheral_links: usize,
+    packet_size: usize,
+    tx_buffers: u8,
+    rx_buffers: u8,
+) -> usize {
+    // SDC_MEM_PER_{CENTRAL,PERIPHERAL}_LINK plus their shared-memory bounds.
+    let buffers = (tx_buffers as usize + rx_buffers as usize) * (packet_size + 15) - 84;
+    let links = central_links * (803 + buffers + 21) + peripheral_links * (923 + buffers + 17);
+    let advertising = (5184 + 31 * 18) / 10; // SDC_MEM_PER_ADV_SET(31).
+    // SDC_MEM_SCAN[_EXT](3); scanning and initiating run sequentially.
+    let scanning = if central_links > 0 {
+        408 + 3 * if cfg!(feature = "ext_adv") { 320 } else { 104 }
+    } else {
+        0
+    };
+    let subrating = if cfg!(feature = "subrating") {
+        12 + (central_links + peripheral_links) * 60
+    } else {
+        0
+    };
+    let filter_accept_list = 4 + 8 * 8; // SDC_MEM_FAL(8).
+    (links + advertising + scanning + subrating + filter_accept_list + 7) & !7
+}
 
 /// Max number of L2CAP channels
 const L2CAP_CHANNELS_MAX: usize = CONNECTIONS_MAX * 4; // Signal + att + smp + hid
@@ -216,16 +275,16 @@ where
 impl<
     'a,
     #[cfg(not(feature = "subrating"))] C: Controller
+        + CentralCmds
         + ExtAdvCmds
         + ControllerCmdAsync<LeSetPhy>
         + ControllerCmdSync<LeReadLocalSupportedFeatures>
-        + ControllerCmdSync<bt_hci::cmd::le::LeSetScanParams>
         + ControllerCmdSync<LeRand>,
     #[cfg(feature = "subrating")] C: Controller
+        + CentralCmds
         + ExtAdvCmds
         + ControllerCmdAsync<LeSetPhy>
         + ControllerCmdSync<LeReadLocalSupportedFeatures>
-        + ControllerCmdSync<bt_hci::cmd::le::LeSetScanParams>
         + ControllerCmdSync<LeRand>
         + ControllerCmdAsync<LeSubrateRequest>,
 > Runnable for BleTransport<'a, C>
