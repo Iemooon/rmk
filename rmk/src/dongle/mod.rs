@@ -19,7 +19,7 @@ mod vial_router;
 use core::cell::Cell;
 use core::ops::ControlFlow;
 
-use bt_hci::cmd::le::{LeReadLocalSupportedFeatures, LeSetPhy, LeSetScanParams};
+use bt_hci::cmd::le::{LeRand, LeReadLocalSupportedFeatures, LeSetPhy, LeSetScanParams};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use bt_hci::param::{AddrKind, BdAddr, LeAdvEventKind, Status};
 use embassy_futures::join::join3;
@@ -160,10 +160,12 @@ where
     C: Controller
         + ControllerCmdAsync<LeSetPhy>
         + ControllerCmdSync<LeReadLocalSupportedFeatures>
-        + ControllerCmdSync<LeSetScanParams>,
+        + ControllerCmdSync<LeSetScanParams>
+        + ControllerCmdSync<LeRand>,
 {
     async fn run(&mut self) -> ! {
         let controller = self.controller.take().expect("Dongle::run called twice");
+        crate::ble::rng::init(&controller).await;
         let mut resources = DongleBleResources::new();
         let stack = trouble_host::new(controller, &mut resources)
             .set_random_address(Address::random(self.address))

@@ -1,6 +1,6 @@
 #[cfg(feature = "subrating")]
 use bt_hci::cmd::le::LeSubrateRequest;
-use bt_hci::cmd::le::{LeReadLocalSupportedFeatures, LeSetPhy};
+use bt_hci::cmd::le::{LeRand, LeReadLocalSupportedFeatures, LeSetPhy};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use bt_hci::param::Error as HciError;
 #[cfg(feature = "split")]
@@ -49,8 +49,11 @@ pub(crate) mod device_info;
 #[cfg(feature = "host")]
 pub(crate) mod host;
 pub(crate) mod led;
+#[cfg(all(feature = "_nrf_ble", target_arch = "arm", target_os = "none"))]
+mod p256;
 pub mod passkey;
 pub(crate) mod profile;
+pub(crate) mod rng;
 #[cfg(any(feature = "split", feature = "dongle"))]
 pub(crate) mod scan;
 pub(crate) mod sleep;
@@ -143,7 +146,10 @@ where
 #[cfg(not(feature = "split"))]
 impl<'a, C> Runnable for BleTransport<'a, C>
 where
-    C: Controller + ControllerCmdAsync<LeSetPhy> + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    C: Controller
+        + ControllerCmdAsync<LeSetPhy>
+        + ControllerCmdSync<LeReadLocalSupportedFeatures>
+        + ControllerCmdSync<LeRand>,
 {
     async fn run(&mut self) -> ! {
         // Load the preferred connection from storage
@@ -151,8 +157,10 @@ where
         crate::state::set_preferred_connection(preferred);
 
         let controller = self.controller.take().expect("BleTransport::run called twice");
+        rng::init(&controller).await;
         // Exactly one link — the host.
-        let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> = HostResources::new();
+        let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, 1, BOND_SLOTS> =
+            HostResources::new();
         let stack = trouble_host::new(controller, &mut resources)
             .set_random_address(Address::random(self.address))
             .build();
@@ -173,11 +181,13 @@ impl<
     #[cfg(not(feature = "subrating"))] C: Controller
         + ControllerCmdAsync<LeSetPhy>
         + ControllerCmdSync<LeReadLocalSupportedFeatures>
-        + ControllerCmdSync<bt_hci::cmd::le::LeSetScanParams>,
+        + ControllerCmdSync<bt_hci::cmd::le::LeSetScanParams>
+        + ControllerCmdSync<LeRand>,
     #[cfg(feature = "subrating")] C: Controller
         + ControllerCmdAsync<LeSetPhy>
         + ControllerCmdSync<LeReadLocalSupportedFeatures>
         + ControllerCmdSync<bt_hci::cmd::le::LeSetScanParams>
+        + ControllerCmdSync<LeRand>
         + ControllerCmdAsync<LeSubrateRequest>,
 > Runnable for BleTransport<'a, C>
 {
@@ -187,8 +197,10 @@ impl<
         crate::state::set_preferred_connection(preferred);
 
         let controller = self.controller.take().expect("BleTransport::run called twice");
+        rng::init(&controller).await;
 
-        let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> = HostResources::new();
+        let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, 1, BOND_SLOTS> =
+            HostResources::new();
         let stack = trouble_host::new(controller, &mut resources)
             .set_random_address(Address::random(self.address))
             .build();
@@ -504,6 +516,9 @@ async fn gatt_events_task<C: Controller + ControllerCmdAsync<LeSetPhy>>(
             GattConnectionEvent::Encrypted { security_level, .. } => {
                 info!("[gatt] encrypted: {:?}", security_level);
                 set_ble_state(BleState::Connected);
+            }
+            GattConnectionEvent::PhyUpdateFailed { .. } | GattConnectionEvent::ConnectionParamsUpdateFailed { .. } => {
+                warn!("[gatt] link parameter update failed");
             }
             GattConnectionEvent::Gatt { event: gatt_event } => {
                 let mut cccd_updated = false;
