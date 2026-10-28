@@ -132,6 +132,8 @@ pub struct RenderContext {
     pub dongle_state: DongleState,
     /// Currently active modifier keys (Shift, Ctrl, Alt, GUI).
     pub modifiers: ModifierCombination,
+    /// Modifier states observed since the last renderer invocation.
+    pub modifier_latch: ModifierCombination,
     /// Whether a key is currently held down.
     pub key_pressed: bool,
     /// Latched true when a key press event arrives, cleared after each render.
@@ -162,6 +164,7 @@ impl Default for RenderContext {
             #[cfg(feature = "dongle")]
             dongle_state: DongleState::default(),
             modifiers: ModifierCombination::new(),
+            modifier_latch: ModifierCombination::new(),
             key_pressed: false,
             key_press_latch: false,
         }
@@ -345,6 +348,7 @@ where
 
         self.renderer.render(&self.ctx, &mut self.display);
         self.ctx.key_press_latch = false;
+        self.ctx.modifier_latch = ModifierCombination::new();
         self.display.flush().await;
 
         self.pending_render = false;
@@ -381,6 +385,7 @@ where
 
     async fn on_modifier_event(&mut self, event: ModifierEvent) {
         self.ctx.modifiers = event.modifier;
+        self.ctx.modifier_latch |= event.modifier;
         self.render().await;
     }
 

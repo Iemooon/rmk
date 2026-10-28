@@ -98,6 +98,10 @@ pub mod core_traits;
 pub mod crc32;
 #[cfg(feature = "custom_message")]
 pub mod custom_message;
+#[cfg(feature = "custom_message")]
+pub mod battery_snapshot;
+#[cfg(all(feature = "custom_message", feature = "split"))]
+pub mod battery_snapshot_responder;
 pub mod debounce;
 #[cfg(feature = "_dfu")]
 pub mod dfu;

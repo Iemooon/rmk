@@ -48,7 +48,7 @@ impl<const BYTES: usize, const SOURCES: usize, const CAP: usize> SnapshotQueue<B
             .is_some_and(|seen| now.saturating_sub(seen) <= within_ms)
     }
     pub const fn new() -> Self {
-        assert!(BYTES > 0 && SOURCES > 0 && CAP >= SOURCES && CAP >= 2);
+        core::assert!(BYTES > 0 && SOURCES > 0 && CAP >= SOURCES && CAP >= 2);
         Self {
             queue: [Snapshot {
                 source: 0,
