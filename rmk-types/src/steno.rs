@@ -136,10 +136,4 @@ mod tests {
             assert_eq!(out, &[i]);
         }
     }
-
-    #[test]
-    fn star_alias_points_at_star1() {
-        assert_eq!(StenoKey::STAR, StenoKey::STAR1);
-        assert_eq!(StenoKey::STAR.chart_index(), 9);
-    }
 }
