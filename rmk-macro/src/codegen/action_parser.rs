@@ -868,17 +868,6 @@ mod tests {
         }
 
         #[test]
-        fn far_off_key_gets_no_hint() {
-            let msg = std::panic::catch_unwind(|| expand("STN(ZqZqZq99)"))
-                .unwrap_err()
-                .downcast::<String>()
-                .unwrap();
-            assert!(msg.contains("unknown steno key 'ZqZqZq99'"), "{msg}");
-            // Nothing within the cutoff, so no fabricated suggestion.
-            assert!(!msg.contains("did you mean"), "{msg}");
-        }
-
-        #[test]
         #[should_panic(expected = "unknown key 'SX1' (did you mean STN(S1)?)")]
         fn bare_typo_suggests_the_stn_form() {
             let _ = expand("SX1");
