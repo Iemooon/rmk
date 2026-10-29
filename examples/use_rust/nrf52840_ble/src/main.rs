@@ -70,7 +70,6 @@ fn build_sdc<'d, const N: usize>(
         .support_dle_peripheral()
         .support_phy_update_peripheral()
         .support_le_2m_phy()
-        .central_count(0)?
         .peripheral_count(rmk::ble::NUM_HOST_LINKS as u8)?
         .buffer_cfg(
             SDC_PACKET_SIZE as u16,
