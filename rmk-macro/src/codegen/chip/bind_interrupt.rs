@@ -10,7 +10,7 @@ use rmk_config::resolved::hardware::{BoardConfig, DfuConfig, InputDeviceConfig, 
 use syn::{ItemFn, ItemMod};
 
 use crate::codegen::display::expand_display_interrupt;
-use crate::codegen::feature::{get_rmk_features, is_feature_enabled};
+use crate::codegen::feature::{get_dependency, get_rmk_features, is_feature_enabled};
 use crate::codegen::input_device::iqs5xx::expand_iqs5xx_interrupts;
 use crate::codegen::override_helper::{Overwritten, find_overwritten};
 
@@ -208,6 +208,16 @@ pub(crate) fn bind_interrupt_default(
                 quote! {}
             };
 
+            let central_count = if get_dependency("nrf-sdc").is_some_and(|dep| {
+                dep.req_features()
+                    .iter()
+                    .any(|feature| matches!(feature.as_str(), "central" | "multirole"))
+            }) {
+                quote! { .central_count(0)? }
+            } else {
+                quote! {}
+            };
+
             let support_adv = if cfg!(feature = "ext_adv") {
                 quote! { .support_ext_adv() }
             } else {
@@ -255,7 +265,7 @@ pub(crate) fn bind_interrupt_default(
                     .support_phy_update_peripheral()
                     .support_le_2m_phy()
                     #tx_power
-                    .central_count(0)?
+                    #central_count
                     .peripheral_count(::rmk::ble::NUM_HOST_LINKS as u8)?
                     .buffer_cfg(SDC_PACKET_SIZE as u16, SDC_PACKET_SIZE as u16, SDC_TX_BUFFERS, SDC_RX_BUFFERS)?
                     .build(p, rng, mpsl, mem)
