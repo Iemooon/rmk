@@ -160,8 +160,8 @@ pub const fn calculate_sdc_memory_size(
     (links + advertising + scanning + subrating + filter_accept_list + 7) & !7
 }
 
-/// Max number of L2CAP channels
-const L2CAP_CHANNELS_MAX: usize = CONNECTIONS_MAX * 4; // Signal + att + smp + hid
+// Fixed ATT/SMP/signalling channels do not consume dynamic L2CAP slots.
+const L2CAP_CHANNELS_MAX: usize = 0;
 
 // Custom messages share the GATT write dispatcher with the host protocol.
 const GATT_WRITE_BUFFER_SIZE: usize = {
