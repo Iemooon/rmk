@@ -558,15 +558,15 @@ async fn gatt_events_task<C: Controller + ControllerCmdAsync<LeSetPhy>>(
     profile: u8,
     profiles: &ProfileManager<'_, '_, C, DefaultPacketPool, BOND_SLOTS>,
 ) -> Result<(), Error> {
-    let level = server.battery_service.level;
+    let level = &server.battery_service.level;
     #[cfg(feature = "split")]
-    let peripheral_levels = server.peripheral_battery_services.levels;
-    let output_keyboard = server.hid_service.output_keyboard;
-    let hid_control_point = server.hid_service.hid_control_point;
-    let input_keyboard = server.hid_service.input_keyboard;
-    let mouse = server.hid_service.mouse_report;
-    let media = server.hid_service.media_report;
-    let system_control = server.hid_service.system_report;
+    let peripheral_levels = &server.peripheral_battery_services.levels;
+    let output_keyboard = &server.hid_service.output_keyboard;
+    let hid_control_point = &server.hid_service.hid_control_point;
+    let input_keyboard = &server.hid_service.input_keyboard;
+    let mouse = &server.hid_service.mouse_report;
+    let media = &server.hid_service.media_report;
+    let system_control = &server.hid_service.system_report;
 
     #[cfg(feature = "passkey_entry")]
     let mut passkey_state = PasskeyInputState::new();
