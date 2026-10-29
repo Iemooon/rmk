@@ -71,8 +71,8 @@ pub async fn run_rmk_split_peripheral<
     #[cfg(feature = "_ble")]
     {
         crate::ble::rng::init(&controller).await;
-        // Exactly one link — the central.
-        let mut resources: HostResources<DefaultPacketPool, 1, 4> = HostResources::new();
+        // One central connection; ATT/SMP/signalling do not need dynamic L2CAP slots.
+        let mut resources: HostResources<DefaultPacketPool, 1, 0> = HostResources::new();
         let stack = trouble_host::new(controller, &mut resources)
             .set_random_address(Address::random(address))
             .build();
