@@ -1,4 +1,4 @@
-Base: rmk-rs/rmk 5ed4fd6fc9059107612004a3416b7d2569fbb045
+Base: rmk-rs/rmk 71556128fa72881fc35f0bf6c292d5e28ad9568d
 
 Maintained feature index (Chinese): [LEMON-NMK-FEATURES.md](LEMON-NMK-FEATURES.md).
 
@@ -97,3 +97,11 @@ expiry/overflow recovery fails 5/2 queue tests. Release ARM library checks
 passed for nRF52840 BLE and nRF52833 without BLE. These are not complete
 firmware links or hardware acceptance. The writer test is wired into local
 and CI test entry points; the full CI scripts were not run.
+
+## Upstream sync (2026-10-30)
+
+Merged upstream main `71556128fa72881fc35f0bf6c292d5e28ad9568d` into `lemon-nmk`. Preserved local dynamic layers, split disconnect/offline peer cleanup, pinned BLE futures, USB session protection, receiver queues, battery snapshots and opt-in nRF52833 DFU window. The split connector now uses upstream legacy/extended connection dispatch.
+
+No storage record layout change was identified: upstream StenoKey enum retains the same one-byte chart-index encoding. STORAGE-BASE-COMMIT is retained. Dependency/features and BLE profile addressing changed upstream; application builds and pairing/reconnect acceptance remain required.
+
+Validation for this merge is recorded in LEMON-NMK-FEATURES.md; older results above are historical. No firmware was flashed.

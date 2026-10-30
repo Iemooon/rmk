@@ -66,6 +66,9 @@ let keymap = [
 
 `STAR` is an alias for `STAR1`.
 
+In `keyboard.toml`, a misspelled name fails the build with a suggestion
+for the closest valid name.
+
 ## Connecting Plover
 
 1. Flash your keyboard with the `steno` feature enabled.

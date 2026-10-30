@@ -1,6 +1,6 @@
 # lemon-nmk 新增特性与维护记录
 
-最后更新：2026-10-27。本文是 `Iemooon/rmk` 的 `lemon-nmk` 分支特性总表。
+最后更新：2026-10-30。本文是 `Iemooon/rmk` 的 `lemon-nmk` 分支特性总表。
 后续新增、修改、移除本地特性及同步上游时，应在同一提交中更新本文。
 
 ## 分支用途与基线
@@ -9,7 +9,7 @@
 分支名称不会选择无线协议；实际协议、RF 参数、引脚、矩阵、USB 名称、分区、
 Vial 解锁设置仍由各固件工程配置。Gazell 无线收发实现也仍属于应用工程。
 
-- 当前上游基线：`5ed4fd6fc9059107612004a3416b7d2569fbb045`。
+- 当前上游基线：`71556128fa72881fc35f0bf6c292d5e28ad9568d`。
 - 原 `dynamic-layers` 已完整合入本分支，旧分支已删除。
 - 原 `vendor/rmk`、`vendor/rmk-cck`、`vendor/rmk-lily58` 的公共补丁已核对覆盖。
 - 库功能统一不代表所有键盘已迁移依赖，也不代表所有实物已验收。
@@ -173,3 +173,17 @@ USB 工具已接入 `scripts/test_all.sh` 和 `.github/ci/test.sh`；未运行�
 | 2026-10-27 | `6107d5861` | 新增 52833 可选 DFU 窗口及配套清标记任务 |
 | 2026-10-27 | 文档体系建立 | 建立本文、首页入口及随代码更新的维护规则；删除已合入的 dynamic-layers 分支 |
 | 2026-10-27 | BLE future 栈占用修复 | 针对 CCK 迁移构建，join 原位固定的子 future 引用，保留原栈检查阈值；无存储格式变化 |
+
+## 2026-10-30 上游同步
+
+合入上游 main `71556128fa72881fc35f0bf6c292d5e28ad9568d`，基于本地 `1216bbf3`。包含 BLE 扩展广播、SDC 配置与内存优化、共享 GATT 元数据、Steno 诊断及依赖更新。解决 central.rs 冲突时保留离线清配对流程，使用上游 connect 分派接口，同时保留本地与上游测试；AGENTS.md 保留双方维护规则。
+
+逐项核对本地功能：动态层、断连松键、离线清配对、原位 pin 的 BLE futures、USB 会话保护、接收队列、电量快照、显示事件和默认关闭的 52833 DFU 窗口均保留。源码入口及启用方式沿用本文说明。
+
+存储：未发现持久记录布局变化；StenoKey 改为枚举后仍使用相同的单字节序号编码，保留 STORAGE-BASE-COMMIT。依赖及 feature 配置变化仍可能影响存储校验；上游 BLE profile 地址算法变化需消费工程实测配对/重连。
+
+本次合并工作树验证（不是沿用历史结果）：USB 生产 writer 模拟 7/7 通过；central.rs 的 stable rustfmt 检查通过（nightly 专属导入排序未检查）。主机与目标检查结果见下文补充。未构建完整固件、未烧录、未做硬件验收。
+
+验证补充：Rust 1.98.1 下，nRF52840 BLE ARM release 库检查通过（`vial,storage,nrf52840_ble,embassy-nrf/nrf52840`）。`cargo test` 的 `split,vial,storage,async_matrix,_ble,ext_adv` 在 Windows MSVC debug/release 均因 embassy-crypto 后端未解析符号而链接失败，未运行测试；本机未安装 nextest。完整 CI/格式脚本未运行。日志：`target/merge-host-tests.log`。
+
+nRF52833 DFU 窗口 ARM release 库检查通过：`cargo +1.98.1 check --manifest-path rmk/Cargo.toml --target thumbv7em-none-eabihf --release --no-default-features --features vial,storage,nrf52833_dfu_window`。日志：`target/merge-dfu-check.log`。本次两项 ARM 检查均不含最终固件链接。
