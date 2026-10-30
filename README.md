@@ -1,135 +1,31 @@
-<!-- PROJECT LOGO -->
-> **Iemooon/lemon-nmk:** [新增特性与维护记录](LEMON-NMK-FEATURES.md) · [52833 DFU 接入](LEMON-NMK-DFU.md)
+# lemon-nmk 分支改动
 
-<br />
-<p align="center">
-  <a href="https://github.com/rmk-rs/rmk">
-    <img src="https://github.com/rmk-rs/rmk/blob/dad1f922f471127f5449262c4cb4a922e351bf43/docs/images/rmk_logo.svg?raw=true" alt="Logo" width="150">
-  </a>
+本分支基于 [rmk-rs/rmk](https://github.com/rmk-rs/rmk)，统一维护 BLE 和 NMK/Gazell 应用使用的公共补丁。当前上游基线为 [`71556128`](https://github.com/rmk-rs/rmk/commit/71556128fa72881fc35f0bf6c292d5e28ad9568d)。
 
-  <p align="center">
-  A modern, easy-to-use, and feature-rich keyboard firmware written in Rust.
-  <br />
-  <br />
-  <a href="https://crates.io/crates/rmk"><img src="https://img.shields.io/crates/v/rmk"></a>
-  <a href="https://docs.rs/rmk/latest/rmk/"><img src="https://img.shields.io/docsrs/rmk"></a>
-  <a href="https://github.com/rmk-rs/rmk/actions"><img src="https://github.com/rmk-rs/rmk/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://discord.gg/HHGA7pQxkG"><img src="https://img.shields.io/discord/1166665039793639424?label=discord"></a>
-  </p>
-</p>
+## 相对上游的改动
 
-👉 Join our [Discord server](https://discord.gg/HHGA7pQxkG) for discussions, support, and community collaboration!
+| 改动 | 行为与启用方式 |
+| --- | --- |
+| USB 唤醒与重连保护 | 休眠或端点暂时不可用时保留待发报告；拔插、重枚举及切换输出后取消旧会话报告，避免补发旧按下。自动用于 USB writer。 |
+| 完整按键状态接收队列 | 提供 `rmk::receiver::SnapshotQueue`，支持多来源、超时松键和溢出后恢复最新状态。应用显式接入，适用于 Gazell 等完整状态接收器。 |
+| 动态层接口 | 提供 `activate_layer_if_inactive`、`deactivate_layer_if_active` 和 `is_layer_active`，用于轨迹球、鼠标等临时层控制。应用按需调用。 |
+| BLE 分体断连松键 | 跟踪成功交付的按键事件；断连时仅释放对应从机的未释放按键，保留本机及其他从机输入。 |
+| BLE 离线清配对 | 从机离线时保留清配对请求，持久状态更新后重新扫描发现；在线时保留原消息流程。 |
+| nRF52833 DFU 窗口 | 默认关闭。启用 `nrf52833_dfu_window` 并运行窗口任务后，第 15～50 秒间断电再上电可进入 bootloader；软件 DFU 前先清除并确认持久标记。 |
+| 稳定存储格式基线 | 使用 `STORAGE-BASE-COMMIT` 标识格式，避免普通实现提交导致存储身份变化；格式变化时仍须推进基线。 |
+| BLE future 栈占用优化 | 原位固定并发子 future，再向 join 传递引用，减少大型临时 future 的搬运。 |
+| 电量快照 | 提供 opt-in 的 WBAT v1 查询协议和接收端状态跟踪，需 `custom_message`；应用显式查询并负责左右电量与断线状态映射。 |
+| 显示修饰键事件 | 暂存快速修饰键变化直到渲染器读取，不影响 HID 报告。 |
 
------
-[中文](https://github.com/rmk-rs/rmk/blob/main/README_zh.md)
+## 接入与兼容性
 
+- BLE/Gazell 协议选择、无线参数、引脚、矩阵、USB 标识、Vial 解锁和 Flash 分区由消费工程配置；本分支不包含 Gazell 无线实现。
+- DFU 窗口仅用于 nRF52833，必须注册并运行任务；接入前移除旧 common 窗口任务，避免重复运行。
+- 旧版存储格式、feature 或容量配置变化可能清除改键、宏及配对。本次上游同步保留存储格式基线，实际工程仍需验证配对与重连。
 
-## Features
+## 分支文档
 
-- **Broad microcontroller compatibility**: Leveraging [embassy](https://github.com/embassy-rs/embassy), RMK supports a comprehensive range of microcontrollers, including stm32, nRF, rp2040(w), esp32, etc
-- **Dynamic keymap customization**: RMK offers real-time keymap modifications through [Vial](https://get.vial.today), or its native [Rynk](https://rmk.rs/docs/features/rynk) protocol (experimental). You can even edit keymaps over BLE connections wirelessly
-- **Advanced keyboard functionality**: RMK comes with lots of advanced keyboard features by default, including layer switching, media controls, system commands, mouse control, and more
-- **Wireless connectivity**: BLE wireless support with automatic reconnection and multi-device capabilities for nRF52, nRF54, esp32, Pi Pico W and SF32LB52 microcontrollers, tested on nRF52840, nRF54L15, nRF54LM20, esp32c3, esp32c6, esp32h2, esp32s3, Pi Pico W
-- **Easy configuration**: RMK simplifies keyboard development through a single `keyboard.toml` configuration file. For Rust enthusiasts, the firmware remains highly customizable using Rust code
-- **Optimized performance**: RMK achieves approximately 2ms latency in wired mode and 10ms in wireless mode. With the `async_matrix` feature enabled, power consumption is significantly reduced—a 2000mAh battery can power your keyboard for several months
-
-## [User Documentation](https://rmk.rs/docs/user_guide/guide_overview) | [API Reference](https://docs.rs/rmk/latest/rmk/) | [FAQs](https://rmk.rs/docs/getting_started/faq) | [Changelog](https://github.com/rmk-rs/rmk/blob/main/rmk/CHANGELOG.md)
-
-## Real-World Implementations
-
-| [rmk-ble-keyboard](https://github.com/rmk-rs/rmk-ble-keyboard) | [dactyl-lynx-rmk](https://github.com/whitelynx/dactyl-lynx-rmk) | [sessile](https://github.com/willpuckett/sessile) |
-| --- | --- | --- |
-| <img src="https://raw.githubusercontent.com/rmk-rs/rmk/refs/heads/main/docs/docs/main/images/rmk_ble_keyboard.jpg" width="300"> | <img src="https://raw.githubusercontent.com/whitelynx/dactyl-lynx-keyboard/refs/heads/main/resources/skeleton-prototype.jpg" width="300"> | <img src="https://raw.githubusercontent.com/rmk-rs/rmk/refs/heads/main/docs/docs/main/images/sessile.png" width="300"> |
-
-| [moonlander-rmk-1](https://github.com/MrFixThis/moonlander-rmk-1) | [rmk-zsa-planck-ez](https://github.com/atvari-eu/rmk-zsa-planck-ez) | [rmk-zsa-voyager](https://github.com/jpds/rmk-zsa-voyager) |
-| --- | --- | --- |
-| <img src="docs/docs/main/images/zsa-moonlander.jpg" width="300"> | <img src="docs/docs/main/images/zsa-planck-ez.webp" width="300"> | <img src="https://raw.githubusercontent.com/rmk-rs/rmk/refs/heads/main/docs/docs/main/images/zsa-voyager.webp" width="300"> |
-
-| [Urchin](https://github.com/TimoBbz/urchin-rmk-firmware) |[zx66](https://github.com/zongxin1993/zx66-keybord) | [Lunakbd](https://github.com/gbPagano/lunakbd) |
-| --- | --- | --- |
-| <img src="https://raw.githubusercontent.com/rmk-rs/rmk/refs/heads/main/docs/docs/main/images/urchin.png" width="300"> | <img src="https://raw.githubusercontent.com/zongxin1993/zx66-keybord/refs/heads/master/Images/zx66-keybord_03.jpg" width="300"> | <img src="https://raw.githubusercontent.com/gbPagano/lunakbd/main/photos/up-down-4-web.jpg" width="300"> |
-
-## Getting Started
-
-### Option 1: Start with a Template
-
-Quickly bootstrap your project using [rmkit](https://github.com/rmk-rs/rmkit) and the official RMK [project template](https://github.com/rmk-rs/rmk-template).
-
-```shell
-cargo install rmkit flip-link
-# If you encounter installation issues on Windows, try this alternative command:
-# powershell -ExecutionPolicy ByPass -c "irm https://github.com/rmk-rs/rmkit/releases/latest/download/rmkit-installer.ps1 | iex"
-rmkit init
-```
-
-For comprehensive guidance, refer to the [User Guide](https://rmk.rs/docs/user_guide/guide_overview).
-
-### Option 2: Explore Built-in Examples
-
-Browse the examples in the [`examples`](https://github.com/rmk-rs/rmk/tree/main/examples) directory. Below are step-by-step instructions for rp2040 development. The process is similar for other microcontrollers when using a debug probe.
-
-#### rp2040 Setup
-
-1. Install [probe-rs](https://github.com/probe-rs/probe-rs)
-
-   ```shell
-   curl --proto '=https' --tlsv1.2 -LsSf https://github.com/probe-rs/probe-rs/releases/latest/download/probe-rs-tools-installer.sh | sh
-   ```
-
-2. Build the firmware
-
-   ```shell
-   cd examples/use_rust/rp2040
-   cargo build --release
-   ```
-
-3. Flash using a debug probe
-
-   With a debug probe connected to your rp2040 board, simply run:
-
-   ```shell
-   cd examples/use_rust/rp2040
-   cargo run --release
-   ```
-
-4. (Optional) Flash via USB
-
-   Without a debug probe, you can use `elf2uf2-rs` to flash via USB:
-
-   1. Install the tool: `cargo install elf2uf2-rs`
-   2. Modify `examples/use_rust/rp2040/.cargo/config.toml` to use `elf2uf2`:
-      ```diff
-      - runner = "probe-rs run --chip RP2040"
-      + runner = "elf2uf2-rs -d"
-      ```
-   3. Connect your rp2040 board while holding the BOOTSEL button until the USB drive appears
-   4. Flash the firmware:
-      ```shell
-      cd examples/use_rust/rp2040
-      cargo run --release
-      ```
-      Upon successful completion, you'll see output similar to:
-      ```shell
-      Finished release [optimized + debuginfo] target(s) in 0.21s
-      Running `elf2uf2-rs -d 'target\thumbv6m-none-eabi\release\rmk-rp2040'`
-      Found pico uf2 disk G:\
-      Transfering program to pico
-      173.00 KB / 173.00 KB [=======================] 100.00 % 193.64 KB/s
-      ```
-
-## [Development Roadmap](https://rmk.rs/docs/development/roadmap)
-
-Current roadmap of RMK can be found [here](https://rmk.rs/docs/development/roadmap).
-
-## Minimum Supported Rust Version (MSRV)
-
-RMK is developed against the latest stable Rust release. While other versions may work, they are not fully tested.
-
-## License
-
-RMK is licensed under either of
-
-- Apache License, Version 2.0 (LICENSE-APACHE or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license (LICENSE-MIT or <http://opensource.org/licenses/MIT>)
-
-at your option.
+- [完整特性、源码入口与验证记录](LEMON-NMK-FEATURES.md)
+- [nRF52833 DFU 接入](LEMON-NMK-DFU.md)
+- [完整状态接收队列接入](LEMON-NMK-RECEIVER.md)
+- [补丁归属与上游同步记录](LOCAL-PATCHES.md)
