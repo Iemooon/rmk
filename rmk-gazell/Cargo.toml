@@ -1,0 +1,10 @@
+[package]
+name = "rmk-gazell"
+version = "0.1.0"
+edition = "2024"
+description = "Opt-in build helper and unmodified Nordic Gazell archives for RMK receivers"
+license-file = "vendor/gzll/license.txt"
+repository = "https://github.com/Iemooon/rmk"
+publish = false
+
+[dependencies]

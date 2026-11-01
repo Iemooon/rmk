@@ -2,6 +2,12 @@ Base: rmk-rs/rmk 71556128fa72881fc35f0bf6c292d5e28ad9568d
 
 Maintained feature index (Chinese): [LEMON-NMK-FEATURES.md](LEMON-NMK-FEATURES.md).
 
+2026-11-01: Added independent opt-in `rmk-gazell` build dependency with unchanged
+Nordic SDK 17.1.1 and nrfxlib 2.9.0 archives, provenance and original licenses.
+The helper emits application link directives, preserving GZLL_DIR/GZLL_LIB.
+No RMK feature, storage schema, DFU policy or runtime driver changes.
+Host helper check and Ergo52 nRF52833 application link passed; no hardware test.
+
 2026-11-01: Extracted opt-in Gazell v4 A/B switching, generic per-source battery
 storage, EBAT/1 and independent battery USB HID modules under `rmk/src/receiver/`.
 Keyboard handover APIs clear transient LT, layers, macros, reports and matrix state;

@@ -3,6 +3,14 @@
 最后更新：2026-11-01。本文是 `Iemooon/rmk` 的 `lemon-nmk` 分支特性总表。
 后续新增、修改、移除本地特性及同步上游时，应在同一提交中更新本文。
 
+2026-11-01：新增独立构建依赖 [`rmk-gazell`](rmk-gazell/README.md)，集中分发未修改的 Nordic
+SDK 17.1.1（现有 52840/52833 接收器）和 nrfxlib 2.9.0（52820 soft-float）Gazell 库及各自许可证。
+消费工程显式添加 build-dependency 并调用 `rmk_gazell::link(chip)`；普通 RMK 工程不依赖它，
+不新增 RMK feature 或存储记录，`STORAGE-BASE-COMMIT` 不变。无线驱动、IRQ/glue、RF 参数仍属于应用。
+保留 GZLL_DIR/GZLL_LIB 覆盖入口。库文件 SHA256 与两个消费工程的原副本一致。
+本次构建辅助库 host check、Ergo52 52833 release 链接通过；完整消费构建结果见接收器说明。
+本次未实机刷写，不新增芯片兼容性或无线性能结论。
+
 2026-11-01：新增显式调用启用的 [A/B 切换与电压模块](LEMON-NMK-RECEIVER.md)：
 [`receiver::switching`](rmk/src/receiver/switching.rs)、
 [`BatteryStore`](rmk/src/receiver/battery.rs)、

@@ -77,3 +77,10 @@ RF 参数、IRQ、扫描与矩阵映射均不属于库。状态机的协议尺�
 
 参考接入：`Iemooon/lemon-kbd` 的 `ergo52-nmk/src/{receiver_switch,battery,battery_usb}.rs`。
 模块本身不新增存储记录；消费旧版 RMK 的工程升级本分支时，仍须检查已有存储格式变化并备份 Vial。
+
+## Gazell 库分发
+
+可通过独立 build-dependency [`rmk-gazell`](rmk-gazell/README.md) 引用原始 Nordic 库。
+它提供库文件与链接路径，不提供 RF 初始化或矩阵驱动。
+现有 52840/52833 接收器仍用 SDK 17.1.1；52820 使用 nrfxlib 2.9.0 soft-float，仍需应用 glue。
+许可证随库保留，仅适用于 Nordic 芯片，不适用 RMK 的 MIT/Apache 授权。
