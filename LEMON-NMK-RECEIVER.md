@@ -84,3 +84,38 @@ RF 参数、IRQ、扫描与矩阵映射均不属于库。状态机的协议尺�
 它提供库文件与链接路径，不提供 RF 初始化或矩阵驱动。
 现有 52840/52833 接收器仍用 SDK 17.1.1；52820 使用 nrfxlib 2.9.0 soft-float，仍需应用 glue。
 许可证随库保留，仅适用于 Nordic 芯片，不适用 RMK 的 MIT/Apache 授权。
+
+## BLE 键盘的直接电压传输（2026-11-01）
+
+键盘主从启用 `rmk/battery_voltage`，采样配置仍沿用板级 ADC/分压。
+`BatteryProcessor` 额外缓存最终电池 mV，每次采样都发电压事件，充电不会暂停该缓存。
+分体从机启用此功能后改发 `BatteryVoltage`，内容是 mV、充电状态及发送时采样年龄，
+不再发送百分比 `BatteryStatus`；主机为标准 BLE Battery Service 在本地派生百分比。
+旧解码分支保留，但不由新发送端使用；各侧请同步升级，不保证旧固件能解码新消息。
+
+主机需同时启用 `split,custom_message,battery_voltage` 并运行 `ScreenBattery::new(central_is_right)`。
+收到 WBAT v2 查询时读取当前采样缓存；每 500ms 最多回复一次。WBAT v1 查询被拒绝。
+应用自定义消息上限至少为 16；无需增大 BLE MTU。线格式如下：
+
+| 字节 | 内容 |
+| --- | --- |
+| 0..3 | `WBAT` |
+| 4 / 5 | 版本 2 / 查询 1 或回复 2 |
+| 6..9 | u32 LE 查询序号 |
+| 10..12 | 左侧 u16 LE 最终 mV + u8 采样年龄秒（向上取整） |
+| 13..15 | 右侧同上 |
+
+查询仅 10 字节。电压 0xFFFE=未知，0xFFFF=离线；采样超过 90 秒变未知。
+主从重连会清从机缓存；旧缓存重新发送仍携带其真实年龄。
+
+接收器启用 `custom_message,dongle`，运行 `receiver::battery_client::BatteryClient`，
+并预留 `custom_message` 和 `dongle_state` 各一个订阅者。
+客户端每 30 秒查询，回复须在 1.5 秒内且序号匹配；35 秒无有效回复/断线时清空。
+`receiver::battery_client::snapshot()` 返回 EBAT 所需的双侧 `Reading`。
+`percentages()` 只供原有屏幕圆圈本地换算，不在无线上传输百分比。
+
+在 `UsbTransport::builder(...).usb_builder()` 中构造一次 `battery_usb::BatteryUsb::new`，
+提供 snapshot 和接收器工作状态回调，与客户端/USB 传输并发运行即可。
+EBAT 保持 v1，Usage Page FF62 / Usage 52，Report ID 0，32 字节 IN/OUT；
+字段 age 表示最近有效回复的接收年龄，WBAT 采样过期由客户端单独处理。
+设备切换控制器无需实例化；固定单接收器使用 `(0, true)` 表示 A/工作中。

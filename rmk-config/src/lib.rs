@@ -547,6 +547,7 @@ define_event_config!(
     sleep_state,
     // Power events
     battery_status,
+    battery_voltage,
     battery_adc,
     charging_state,
     // Pointing device events

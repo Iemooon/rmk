@@ -18,6 +18,7 @@ features = ["split", "vial", "async_matrix", "_ble"]
 doctest = false
 
 [features]
+battery_voltage = ["rmk-types/battery_voltage"]
 default = ["defmt", "storage", "vial", "host_lock", "watchdog"]
 
 ## Enable hardware watchdog support

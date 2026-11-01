@@ -49,18 +49,27 @@ pub(crate) async fn run(server: &Server<'_>, conn: &GattConnection<'_, '_, Defau
     let mut layer = LayerChangeEvent::subscriber();
     let mut wpm = WpmUpdateEvent::subscriber();
     let mut sleep = SleepStateEvent::subscriber();
+    #[cfg(not(feature = "battery_voltage"))]
     let mut battery = BatteryStatusEvent::subscriber();
-    #[cfg(feature = "split")]
+    #[cfg(all(feature = "split", not(feature = "battery_voltage")))]
     let mut peripheral_battery = PeripheralBatteryEvent::subscriber();
 
     let queue_events = async {
         loop {
+            let next_battery = async {
+                #[cfg(not(feature = "battery_voltage"))]
+                {
+                    DongleEvent::Battery(battery.next_event().await)
+                }
+                #[cfg(feature = "battery_voltage")]
+                core::future::pending::<DongleEvent>().await
+            };
             let next_peripheral_battery = async {
-                #[cfg(feature = "split")]
+                #[cfg(all(feature = "split", not(feature = "battery_voltage")))]
                 {
                     DongleEvent::PeripheralBattery(peripheral_battery.next_event().await)
                 }
-                #[cfg(not(feature = "split"))]
+                #[cfg(any(not(feature = "split"), feature = "battery_voltage"))]
                 core::future::pending::<DongleEvent>().await
             };
             let event = futures::select_biased! {
@@ -69,7 +78,7 @@ pub(crate) async fn run(server: &Server<'_>, conn: &GattConnection<'_, '_, Defau
                 e = layer.next_event().fuse() => DongleEvent::Layer(e),
                 e = wpm.next_event().fuse() => DongleEvent::Wpm(e),
                 e = sleep.next_event().fuse() => DongleEvent::Sleep(e),
-                e = battery.next_event().fuse() => DongleEvent::Battery(e),
+                e = next_battery.fuse() => e,
                 e = next_peripheral_battery.fuse() => e,
             };
             let _ = queue.try_send(event);

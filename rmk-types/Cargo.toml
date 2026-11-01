@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 resolver = "2"
 
 [features]
+battery_voltage = []
 default = []
 defmt = ["dep:defmt", "postcard/defmt", "heapless/defmt"]
 # Feature for proc-macro code generation only, not included in firmware

@@ -12,10 +12,7 @@ use {
     crate::storage::{StorageItem, store_unchecked},
 };
 #[cfg(feature = "_ble")]
-use {
-    crate::event::{BatteryStatusEvent, EventSubscriber},
-    trouble_host::prelude::*,
-};
+use {crate::event::EventSubscriber, trouble_host::prelude::*};
 
 use super::SplitMessage;
 use super::driver::{SplitReader, SplitWriter};
@@ -23,6 +20,10 @@ use super::driver::{SplitReader, SplitWriter};
 use crate::ble::ExtAdvCmds;
 #[cfg(feature = "dfu_split")]
 use crate::dfu::{DfuCmd, DfuTarget, SPLIT_RESPONSE_CHANNEL, SplitResponse};
+#[cfg(all(feature = "_ble", not(feature = "battery_voltage")))]
+use crate::event::BatteryStatusEvent;
+#[cfg(all(feature = "_ble", feature = "battery_voltage"))]
+use crate::event::BatteryVoltageEvent as BatteryStatusEvent;
 #[cfg(feature = "dfu_split")]
 use crate::event::DfuCmdEvent;
 use crate::event::{
@@ -117,7 +118,12 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                 crate::select_biased_with_feature! {
                     e = key_sub.next_message_pure().fuse() => SplitMessage::Key(e),
                     e = pointing_sub.next_message_pure().fuse() => SplitMessage::Pointing(e),
-                    with_feature("_ble"): e = battery_sub.next_event().fuse() => SplitMessage::BatteryStatus(e),
+                    with_feature("_ble"): e = battery_sub.next_event().fuse() => {
+                        #[cfg(feature = "battery_voltage")]
+                        { let _ = e; SplitMessage::BatteryVoltage(crate::input_device::battery::current_battery_voltage()) }
+                        #[cfg(not(feature = "battery_voltage"))]
+                        { SplitMessage::BatteryStatus(e) }
+                    },
                 }
             };
 
@@ -129,7 +135,14 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                             trace!("Received central connection status: {:?}", status);
                             update_status(|c| *c = status);
                             // The central sends this only after subscribing to split notifications.
-                            #[cfg(feature = "_ble")]
+                            #[cfg(all(feature = "_ble", feature = "battery_voltage"))]
+                            self.split_driver
+                                .write(&SplitMessage::BatteryVoltage(
+                                    crate::input_device::battery::current_battery_voltage(),
+                                ))
+                                .await
+                                .ok();
+                            #[cfg(all(feature = "_ble", not(feature = "battery_voltage")))]
                             self.split_driver
                                 .write(&SplitMessage::BatteryStatus(
                                     crate::input_device::battery::current_battery_status().into(),

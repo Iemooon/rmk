@@ -120,3 +120,5 @@ Merged upstream main `71556128fa72881fc35f0bf6c292d5e28ad9568d` into `lemon-nmk`
 No storage record layout change was identified: upstream StenoKey enum retains the same one-byte chart-index encoding. STORAGE-BASE-COMMIT is retained. Dependency/features and BLE profile addressing changed upstream; application builds and pairing/reconnect acceptance remain required.
 
 Validation for this merge is recorded in LEMON-NMK-FEATURES.md; older results above are historical. No firmware was flashed.
+
+2026-11-01：opt-in `battery_voltage`、WBAT v2 与共享电压客户端，见 LEMON-NMK-RECEIVER.md。标准蓝牙电池服务仍用百分比；不接入 A/B 切换，不改变存储。

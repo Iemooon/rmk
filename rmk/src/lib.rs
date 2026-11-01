@@ -88,6 +88,10 @@ use {embedded_storage_async::nor_flash::NorFlash as AsyncNorFlash, storage::Stor
 
 use crate::config::PositionalConfig;
 
+#[cfg(feature = "custom_message")]
+pub mod battery_snapshot;
+#[cfg(all(feature = "custom_message", feature = "split", feature = "battery_voltage"))]
+pub mod battery_snapshot_responder;
 #[cfg(feature = "_ble")]
 pub mod ble;
 pub mod boot;
@@ -98,10 +102,6 @@ pub mod core_traits;
 pub mod crc32;
 #[cfg(feature = "custom_message")]
 pub mod custom_message;
-#[cfg(feature = "custom_message")]
-pub mod battery_snapshot;
-#[cfg(all(feature = "custom_message", feature = "split"))]
-pub mod battery_snapshot_responder;
 pub mod debounce;
 #[cfg(feature = "_dfu")]
 pub mod dfu;

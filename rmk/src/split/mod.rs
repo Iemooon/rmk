@@ -108,6 +108,9 @@ pub(crate) enum SplitMessage {
     /// Central → Peripheral: request system reset.
     #[cfg(feature = "dfu_split")]
     SystemReset,
+    /// Final voltage; enabled senders no longer transmit percentage status.
+    #[cfg(all(feature = "_ble", feature = "battery_voltage"))]
+    BatteryVoltage(rmk_types::battery::BatteryVoltage),
 }
 
 // -----------------------------------------------------------------------

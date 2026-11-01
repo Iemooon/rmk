@@ -6,6 +6,34 @@ use embassy_usb::{
 };
 use static_cell::StaticCell;
 
+/// Runnable wrapper for applications using `run_all!`.
+pub struct BatteryUsb<D: Driver<'static>> {
+    hid: Option<HidReaderWriter<'static, D, 32, 32>>,
+    snapshot: fn() -> [Option<super::battery::Reading>; 2],
+    status: fn() -> (u8, bool),
+}
+impl<D: Driver<'static>> BatteryUsb<D> {
+    pub fn new(
+        builder: &mut Builder<'static, D>,
+        snapshot: fn() -> [Option<super::battery::Reading>; 2],
+        status: fn() -> (u8, bool),
+    ) -> Self {
+        Self {
+            hid: Some(build(builder)),
+            snapshot,
+            status,
+        }
+    }
+    pub async fn run(&mut self) -> ! {
+        run(
+            self.hid.take().expect("battery USB can only run once"),
+            self.snapshot,
+            self.status,
+        )
+        .await
+    }
+}
+
 // Usage page 0xFF62, usage 0x52; no Report ID; 32-byte IN and OUT reports.
 const DESCRIPTOR: &[u8] = &[
     0x06, 0x62, 0xff, 0x09, 0x52, 0xa1, 0x01, 0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x20, 0x09, 0x01, 0x81,

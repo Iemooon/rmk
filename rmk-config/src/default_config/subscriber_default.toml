@@ -149,6 +149,10 @@ events = [
 ]
 
 # --- DFU Lock-gated internal subscribers ---
+[[subscriber]]
+features = ["split", "_ble", "battery_voltage"]
+events = [{ name = "battery_voltage" }]
+
 
 [[subscriber]]
 features = ["dfu_lock"]

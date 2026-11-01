@@ -39,6 +39,11 @@ impl<const SOURCES: usize> BatteryStore<SOURCES> {
     pub fn snapshot(&self) -> [Option<Reading>; SOURCES] {
         self.readings
     }
+    pub fn clear(&mut self, source: usize) {
+        if let Some(slot) = self.readings.get_mut(source) {
+            *slot = None;
+        }
+    }
 }
 #[cfg(test)]
 mod tests {

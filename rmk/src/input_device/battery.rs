@@ -19,6 +19,32 @@ pub(crate) fn current_battery_status() -> BatteryStatus {
     BATTERY_STATUS.lock(|c| c.get())
 }
 
+#[cfg(feature = "battery_voltage")]
+#[derive(Clone, Copy)]
+struct VoltageCache {
+    value: rmk_types::battery::BatteryVoltage,
+    sampled_at_ms: Option<u64>,
+}
+#[cfg(feature = "battery_voltage")]
+static VOLTAGE: Mutex<RawMutex, Cell<VoltageCache>> = Mutex::new(Cell::new(VoltageCache {
+    value: rmk_types::battery::BatteryVoltage::UNKNOWN,
+    sampled_at_ms: None,
+}));
+
+#[cfg(feature = "battery_voltage")]
+pub(crate) fn current_battery_voltage() -> rmk_types::battery::BatteryVoltage {
+    VOLTAGE.lock(|cache| {
+        let mut value = cache.get().value;
+        value.age_ms = cache.get().sampled_at_ms.map_or(u32::MAX, |at| {
+            embassy_time::Instant::now()
+                .as_millis()
+                .saturating_sub(at)
+                .min(u32::MAX as u64) as u32
+        });
+        value
+    })
+}
+
 /// Reads charging state from a GPIO pin and publishes ChargingStateEvent.
 ///
 /// This input device monitors a charging state pin and publishes events when
@@ -112,6 +138,17 @@ impl BatteryProcessor {
     async fn on_battery_adc_event(&mut self, event: BatteryAdcEvent) {
         let val = event.0;
         trace!("Detected battery ADC value: {:?}", val);
+        #[cfg(feature = "battery_voltage")]
+        if let Some((measured, total)) = self.adc_divider.filter(|(m, t)| *m > 0 && *t > 0) {
+            VOLTAGE.lock(|cache| {
+                let mut state = cache.get();
+                state.value.millivolts = u16::try_from(u64::from(val) * u64::from(total) / u64::from(measured)).ok();
+                state.sampled_at_ms = Some(embassy_time::Instant::now().as_millis());
+                cache.set(state);
+            });
+            // Every ADC sample, including charging and unchanged percentages.
+            publish_event(crate::event::BatteryVoltageEvent);
+        }
 
         let Some(battery_percent) = self.get_battery_percent(val) else {
             return;
@@ -143,6 +180,15 @@ impl BatteryProcessor {
 
     async fn on_charging_state_event(&mut self, event: ChargingStateEvent) {
         let charging = event.charging;
+        #[cfg(feature = "battery_voltage")]
+        {
+            VOLTAGE.lock(|cache| {
+                let mut state = cache.get();
+                state.value.charge_state = charging.into();
+                cache.set(state);
+            });
+            publish_event(crate::event::BatteryVoltageEvent);
+        }
         info!("Charging state changed: {:?}", charging);
 
         let level = match self.battery_status {
@@ -176,6 +222,39 @@ mod tests {
     use crate::core_traits::Runnable;
     use crate::processor::builtin::battery_led::BatteryLedProcessor;
     use crate::test_support::test_block_on;
+
+    #[cfg(feature = "battery_voltage")]
+    #[test]
+    fn voltage_keeps_sampling_while_charging_and_without_percentage_changes() {
+        test_block_on(async {
+            let mut processor = BatteryProcessor::new(1, 2);
+            processor
+                .on_charging_state_event(crate::event::ChargingStateEvent { charging: true })
+                .await;
+            processor
+                .on_battery_adc_event(crate::event::BatteryAdcEvent(1890))
+                .await;
+            assert_eq!(super::current_battery_voltage().millivolts, Some(3780));
+            processor
+                .on_battery_adc_event(crate::event::BatteryAdcEvent(1891))
+                .await;
+            let voltage = super::current_battery_voltage();
+            assert_eq!(voltage.millivolts, Some(3782));
+            assert_eq!(voltage.charge_state, ChargeState::Charging);
+            assert_eq!(
+                voltage.status(),
+                BatteryStatus::Available {
+                    charge_state: ChargeState::Charging,
+                    level: Some(30)
+                }
+            );
+            MockDriver::get().advance(Duration::from_secs(35));
+            processor
+                .on_charging_state_event(crate::event::ChargingStateEvent { charging: false })
+                .await;
+            assert!(super::current_battery_voltage().age_ms >= 35_000);
+        });
+    }
 
     #[test]
     fn zero_adc_divider_does_not_panic() {

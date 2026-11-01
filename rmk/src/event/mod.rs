@@ -58,6 +58,8 @@ mod split;
 mod state;
 
 pub use action::ActionEvent;
+#[cfg(feature = "battery_voltage")]
+pub use battery::BatteryVoltageEvent;
 pub use battery::{BatteryAdcEvent, BatteryStatusEvent, ChargingStateEvent};
 pub use connection::{ConnectionStatus, ConnectionStatusChangeEvent, ConnectionType};
 #[cfg(feature = "_dfu")]

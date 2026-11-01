@@ -3,6 +3,15 @@
 最后更新：2026-11-01。本文是 `Iemooon/rmk` 的 `lemon-nmk` 分支特性总表。
 后续新增、修改、移除本地特性及同步上游时，应在同一提交中更新本文。
 
+2026-11-01：新增显式 `battery_voltage` 功能，分体从机传最终电池 mV、充电状态和采样年龄，
+中央端仅为标准 BLE Battery Service 派生百分比。充电中或百分比不变时仍更新电压。
+WBAT 更新为 v2（16 字节，左右各含 mV/采样年龄），v1 不混用；应用两侧和接收器需一起升级。
+接收端复用 `BatteryStore`，新增共享 `receiver::battery_client::BatteryClient` 与 EBAT USB runnable。
+不调用设备切换模块，不新增存储记录，`STORAGE-BASE-COMMIT` 不变。详见 [电压接入](LEMON-NMK-RECEIVER.md)。
+本次无 BLE 主机库测试 311 项通过，含充电、未跨百分比边界、采样年龄和协议重放/过期回归。
+含 BLE 的库通过 check；Windows BLE 测试链接仍受既有 embassy-crypto 后端符号问题阻止，不能计为通过。
+完整消费工程的构建及硬件状态由各工程另记；本次不自动刷写。
+
 2026-11-01：新增独立构建依赖 [`rmk-gazell`](rmk-gazell/README.md)，集中分发未修改的 Nordic
 SDK 17.1.1（现有 52840/52833 接收器）和 nrfxlib 2.9.0（52820 soft-float）Gazell 库及各自许可证。
 消费工程显式添加 build-dependency 并调用 `rmk_gazell::link(chip)`；普通 RMK 工程不依赖它，

@@ -66,6 +66,10 @@ pub(crate) trait SplitWriter {
 struct PeripheralSlot {
     connected: bool,
     battery: BatteryStatus,
+    #[cfg(feature = "battery_voltage")]
+    voltage: rmk_types::battery::BatteryVoltage,
+    #[cfg(feature = "battery_voltage")]
+    voltage_received_at_ms: u64,
 }
 
 static PERIPHERAL_SLOTS: BlockingMutex<crate::RawMutex, Cell<[PeripheralSlot; crate::SPLIT_PERIPHERALS_NUM]>> =
@@ -73,6 +77,10 @@ static PERIPHERAL_SLOTS: BlockingMutex<crate::RawMutex, Cell<[PeripheralSlot; cr
         [PeripheralSlot {
             connected: false,
             battery: BatteryStatus::Unavailable,
+            #[cfg(feature = "battery_voltage")]
+            voltage: rmk_types::battery::BatteryVoltage::UNKNOWN,
+            #[cfg(feature = "battery_voltage")]
+            voltage_received_at_ms: 0,
         }; crate::SPLIT_PERIPHERALS_NUM],
     ));
 
@@ -96,7 +104,13 @@ fn update_slot(id: usize, f: impl FnOnce(&mut PeripheralSlot)) -> bool {
 
 /// Latch peripheral `id`'s connected state and broadcast the change.
 pub(crate) fn set_peripheral_connected(id: usize, connected: bool) {
-    if update_slot(id, |s| s.connected = connected) {
+    if update_slot(id, |s| {
+        s.connected = connected;
+        #[cfg(feature = "battery_voltage")]
+        if !connected {
+            s.voltage = rmk_types::battery::BatteryVoltage::UNKNOWN;
+        }
+    }) {
         publish_event(PeripheralConnectedEvent { id, connected });
     }
 }
@@ -110,6 +124,22 @@ pub(crate) fn set_peripheral_battery(id: usize, battery: BatteryStatus) {
             state: BatteryStatusEvent(battery),
         });
     }
+}
+
+#[cfg(feature = "battery_voltage")]
+pub(crate) fn current_peripheral_voltage(id: usize) -> Option<rmk_types::battery::BatteryVoltage> {
+    PERIPHERAL_SLOTS.lock(|slots| {
+        slots.get().get(id).filter(|s| s.connected).map(|s| {
+            let mut value = s.voltage;
+            value.age_ms = value.age_ms.saturating_add(
+                embassy_time::Instant::now()
+                    .as_millis()
+                    .saturating_sub(s.voltage_received_at_ms)
+                    .min(u32::MAX as u64) as u32,
+            );
+            value
+        })
+    })
 }
 
 /// Latest battery status reported by peripheral `id`.
@@ -545,6 +575,14 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
             SplitMessage::Pointing(e) => publish_event(e),
             #[cfg(feature = "_ble")]
             SplitMessage::BatteryStatus(state) => set_peripheral_battery(self.id, state.0),
+            #[cfg(all(feature = "_ble", feature = "battery_voltage"))]
+            SplitMessage::BatteryVoltage(value) => {
+                update_slot(self.id, |s| {
+                    s.voltage = value;
+                    s.voltage_received_at_ms = embassy_time::Instant::now().as_millis();
+                });
+                set_peripheral_battery(self.id, value.status());
+            }
             #[cfg(feature = "dfu_split")]
             SplitMessage::FirmwareHashResponse(hash) => {
                 info!("dfu_split: stale hash response ({:#x}) in event loop", hash);

@@ -305,6 +305,8 @@ mod tests {
 }
 
 pub mod battery;
+#[cfg(all(feature = "custom_message", feature = "dongle"))]
+pub mod battery_client;
 pub mod battery_protocol;
 #[cfg(not(feature = "_no_usb"))]
 pub mod battery_usb;
