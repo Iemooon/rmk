@@ -25,7 +25,7 @@ SDK 17.1.1（现有 52840/52833 接收器）和 nrfxlib 2.9.0（52820 soft-float
 [`BatteryStore`](rmk/src/receiver/battery.rs)、
 [`EBAT/1`](rmk/src/receiver/battery_protocol.rs)、
 [`独立 USB HID`](rmk/src/receiver/battery_usb.rs)，以及 Keyboard 外部 User 动作模式和切换清理接口。
-默认不启用，不改变普通 BLE User 行为。协议仍限定两接收器、两半、四行；无线驱动留在应用。
+默认不启用，不改变普通 BLE User 行为。这里的切换协议固定支持两个 A/B 接收器，每个接收器跟踪左右两个来源，每个来源传四行数据；无线驱动仍由应用负责。
 模块不改变存储格式，保留当前 `STORAGE-BASE-COMMIT`；旧固件迁移仍需备份 Vial。
 
 本次验证：`std,log,split,vial,host_lock,storage,async_matrix` 主机 619 项通过，

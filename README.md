@@ -8,7 +8,7 @@
 
 | 改动 | 行为与启用方式 | 源码位置 |
 | --- | --- | --- |
-| A/B 接收器切换 | 应用显式接入，管理切换、松键确认和唯一接收器接管。当前协议限定两个接收器、左右两半、每半四行。 | [receiver/switching.rs](rmk/src/receiver/switching.rs) |
+| A/B 接收器切换 | 应用显式接入，管理切换、松键确认和唯一接收器接管。当前切换协议固定支持两个 A/B 接收器；每个接收器跟踪左右两个来源，每个来源传四行数据。 | [receiver/switching.rs](rmk/src/receiver/switching.rs) |
 | 切换时清理按键状态 | 应用显式调用切换运行入口或清理接口，清除 LT 长按、临时层、修饰键、宏和矩阵按住状态，并排队发送全松报告。常规运行入口不触发。 | [keyboard.rs](rmk/src/keyboard.rs)、[keymap.rs](rmk/src/keymap.rs)、[keyboard/macros.rs](rmk/src/keyboard/macros.rs)、[matrix.rs](rmk/src/matrix.rs) |
 | 独立电池电压记录 | 应用显式使用 `BatteryStore<N>`，保存各来源的电池类型、最终 mV 和收包时间；不负责采样或百分比换算。 | [receiver/battery.rs](rmk/src/receiver/battery.rs) |
 | USB 电压查询接口 | 应用显式注册并运行独立 HID，通过 EBAT/1 向上位机提供左右电池信息。 | [battery_protocol.rs](rmk/src/receiver/battery_protocol.rs)、[battery_usb.rs](rmk/src/receiver/battery_usb.rs) |

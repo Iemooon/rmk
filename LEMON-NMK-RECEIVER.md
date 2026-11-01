@@ -62,7 +62,7 @@ Python 工具提取实际生产 writer 和会话判定函数，放入受控端�
 
 | 模块/API | 职责 | 应用负责 |
 | --- | --- | --- |
-| `receiver::switching::Control` | 两接收器、两半、四行的 Gazell v4 / ACK v2 状态机 | 无线收发、单调时钟、USB 完成确认 |
+| `receiver::switching::Control` | 固定两个 A/B 接收器、每个接收器左右两个来源、每个来源四行数据的 Gazell v4 / ACK v2 切换状态机 | 无线收发、单调时钟、USB 完成确认 |
 | `switching::Config` | User ID 和断连超时；默认 `[0,1,2]`、700 ms | 选择 A/B 身份与板级参数 |
 | `Keyboard::run_with_handover` | 事件过滤、清理 LT/宏/修饰键/临时层/矩阵状态，发送全松报告 | 提供 allow、needs_reset、reset_done 回调 |
 | `Keyboard::set_external_user_actions` | 把 User 动作交给应用 ActionEvent 订阅者 | 注册订阅者，避免同时使用 BLE User 动作 |
