@@ -160,6 +160,7 @@ impl Runnable for Keyboard<'_> {
 }
 
 pub struct Keyboard<'a> {
+    external_user_actions: bool,
     /// Keymap
     pub(crate) keymap: &'a KeyMap<'a>,
 
@@ -238,6 +239,7 @@ pub struct Keyboard<'a> {
 impl<'a> Keyboard<'a> {
     pub fn new(keymap: &'a KeyMap<'a>) -> Self {
         Keyboard {
+            external_user_actions: false,
             keymap,
             keyboard_event_subscriber: KeyboardEvent::subscriber(),
             last_press_time: Instant::now(),
@@ -262,6 +264,84 @@ impl<'a> Keyboard<'a> {
             steno: crate::keyboard::steno::StenoChord::new(),
             #[cfg(feature = "passkey_entry")]
             passkey_entry_state: crate::ble::passkey::PasskeyEntryState::new(),
+        }
+    }
+
+    /// Route User actions to an application's ActionEvent subscriber instead of BLE profiles.
+    /// Defaults to false. Does not enable a radio or select a profile.
+    pub fn set_external_user_actions(&mut self, external: bool) {
+        self.external_user_actions = external;
+        #[cfg(feature = "_ble")]
+        {
+            self.user_hold = None;
+        }
+    }
+
+    /// Opt-in receiver loop. Application hooks own switching and USB completion.
+    /// Call this instead of Runnable::run; never run both tasks on one keyboard.
+    pub async fn run_with_handover(
+        &mut self,
+        allow: fn(KeyboardEvent) -> bool,
+        needs_reset: fn() -> bool,
+        reset_done: fn(),
+    ) -> ! {
+        self.set_external_user_actions(true);
+        loop {
+            if needs_reset() {
+                self.reset_for_handover().await;
+                reset_done();
+            }
+            let poll = Instant::now() + Duration::from_millis(5);
+            let deadline = self.next_deadline().map_or(poll, |d| d.min(poll));
+            match with_deadline(deadline, self.keyboard_event_subscriber.next_message_pure()).await {
+                Ok(event) if allow(event) => self.process_inner(event).await,
+                Ok(_) => {}
+                Err(_) => self.fire_expired().await,
+            }
+        }
+    }
+
+    /// Cancel transient actions without synthesizing LT taps or macro release halves.
+    /// USB writers must still confirm all-up writes before the radio may depart.
+    pub async fn reset_for_handover(&mut self) {
+        self.held_buffer.keys.clear();
+        while self.keyboard_event_subscriber.try_next_message().is_some() {}
+        self.keymap.macros(|m| m.cancel_playback());
+        self.macro_due = Instant::from_ticks(0);
+        self.registered.clear();
+        self.osl_state = OneShotState::default();
+        self.osl_deadline = None;
+        self.osm_state = OneShotState::default();
+        self.osm_deadline = None;
+        self.fork_states.fill(None);
+        self.fork_keep_mask = ModifierCombination::default();
+        self.mouse = MouseState::new();
+        self.keymap.set_mouse_buttons(0);
+        self.last_key_code = HidKeyCode::No;
+        #[cfg(feature = "_ble")]
+        {
+            self.user_hold = None;
+        }
+        self.caps_word.deactivate();
+        self.keymap.reset_transient_layers();
+        #[cfg(feature = "host_lock")]
+        self.keymap.clear_matrix_state();
+        self.keymap.with_combos_mut(|combos| {
+            for combo in combos.iter_mut().flatten() {
+                combo.reset();
+            }
+        });
+        self.media_report.usage_id = 0;
+        self.system_control_report.usage_id = 0;
+        self.send_keyboard_report_with_resolved_modifiers(false).await;
+        self.send_mouse_report().await;
+        self.send_media_report().await;
+        self.send_system_control_report().await;
+        #[cfg(feature = "steno")]
+        {
+            self.steno = crate::keyboard::steno::StenoChord::new();
+            self.send_report(Report::StenoReport(crate::hid::StenoReport { keys: [0; 8] }))
+                .await;
         }
     }
 
@@ -1643,6 +1723,9 @@ impl<'a> Keyboard<'a> {
     }
 
     async fn process_user(&mut self, id: u8, event: KeyboardEvent) {
+        if self.external_user_actions {
+            return;
+        }
         debug!("Processing user key id: {:?}, event: {:?}", id, event);
 
         #[cfg(feature = "_ble")]
@@ -2020,6 +2103,110 @@ mod test {
 
     fn create_test_keyboard() -> Keyboard<'static> {
         create_test_keyboard_with_config(BehaviorConfig::default())
+    }
+
+    #[cfg(feature = "_ble")]
+    #[test]
+    fn receiver_user_keys_do_not_enqueue_ble_profile_actions() {
+        block_on(async {
+            use crate::ble::profile::BleProfileAction;
+            use crate::channel::BLE_PROFILE_CHANNEL;
+            while BLE_PROFILE_CHANNEL.try_receive().is_ok() {}
+            assert!(BLE_PROFILE_CHANNEL.try_send(BleProfileAction::Switch(0)).is_ok());
+            let mut keyboard = create_test_keyboard();
+            keyboard.set_external_user_actions(true);
+            let result = embassy_time::with_timeout(Duration::from_millis(100), async {
+                for _ in 0..20 {
+                    for id in 0..=2 {
+                        keyboard.process_user(id, KeyboardEvent::key(0, 0, true)).await;
+                        keyboard.process_user(id, KeyboardEvent::key(0, 0, false)).await;
+                    }
+                }
+            })
+            .await;
+            assert!(
+                result.is_ok(),
+                "receiver User releases blocked on the unconsumed BLE queue"
+            );
+            assert!(BLE_PROFILE_CHANNEL.try_receive().is_ok());
+            assert!(BLE_PROFILE_CHANNEL.try_receive().is_err());
+        });
+    }
+
+    #[test]
+    fn handover_reset_clears_modifiers_mouse_and_repeat() {
+        block_on(async {
+            let mut keyboard = create_test_keyboard();
+            keyboard
+                .process_key_action_normal(
+                    Action::Key(KeyCode::Hid(HidKeyCode::LShift)),
+                    KeyboardEvent::key(3, 0, true),
+                )
+                .await;
+            keyboard
+                .process_key_action_normal(
+                    Action::Key(KeyCode::Hid(HidKeyCode::MouseBtn1)),
+                    KeyboardEvent::key(3, 1, true),
+                )
+                .await;
+            assert_ne!(keyboard.mouse.report.buttons, 0);
+            assert_ne!(keyboard.resolve_modifiers(false), ModifierCombination::new());
+            keyboard.reset_for_handover().await;
+            assert_eq!(keyboard.mouse.report.buttons, 0);
+            assert_eq!(keyboard.keymap.mouse_buttons(), 0);
+            assert_eq!(keyboard.resolve_modifiers(false), ModifierCombination::new());
+            assert_eq!(keyboard.last_key_code, HidKeyCode::No);
+        });
+    }
+
+    #[test]
+    fn handover_reset_clears_held_lt_without_waiting_for_physical_release() {
+        block_on(async {
+            let mut keyboard = create_test_keyboard();
+            let position = KeyboardEvent::key(0, 0, true).source;
+            keyboard.keymap.set_action_at(
+                position,
+                0,
+                KeyAction::TapHold(
+                    Action::Key(KeyCode::Hid(HidKeyCode::Escape)),
+                    Action::LayerOn(1),
+                    Default::default(),
+                ),
+            );
+            keyboard.process_inner(KeyboardEvent::key(0, 0, true)).await;
+            force_timeout_first_hold(&mut keyboard).await;
+            assert_eq!(keyboard.keymap.active_layer(), 1);
+            assert!(!keyboard.held_buffer.is_empty());
+            #[cfg(feature = "host_lock")]
+            assert!(keyboard.keymap.read_matrix_key(0, 0));
+            keyboard.reset_for_handover().await;
+            assert_eq!(keyboard.keymap.active_layer(), 0);
+            assert!(keyboard.held_buffer.is_empty());
+            #[cfg(feature = "host_lock")]
+            {
+                let mut bitmap = [0xff; 10];
+                keyboard.keymap.read_matrix_state(&mut bitmap);
+                assert_eq!(bitmap, [0; 10]);
+            }
+            assert_eq!(keyboard.resolve_modifiers(false), ModifierCombination::new());
+            keyboard.process_inner(KeyboardEvent::key(0, 0, false)).await;
+            assert_eq!(keyboard.keymap.active_layer(), 0);
+            assert_eq!(keyboard.held_keycodes(), [HidKeyCode::No; 6]);
+        });
+    }
+
+    #[test]
+    fn handover_reset_cancels_unresolved_lt_without_emitting_tap() {
+        block_on(async {
+            let mut keyboard = create_test_keyboard();
+            keyboard.process_inner(KeyboardEvent::key(2, 1, true)).await;
+            assert!(!keyboard.held_buffer.is_empty());
+            keyboard.reset_for_handover().await;
+            assert!(keyboard.held_buffer.is_empty());
+            assert_eq!(keyboard.held_keycodes(), [HidKeyCode::No; 6]);
+            keyboard.process_inner(KeyboardEvent::key(2, 1, false)).await;
+            assert_eq!(keyboard.held_keycodes(), [HidKeyCode::No; 6]);
+        });
     }
 
     async fn force_timeout_first_hold(keyboard: &mut Keyboard<'static>) {

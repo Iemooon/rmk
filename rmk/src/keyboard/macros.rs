@@ -177,6 +177,10 @@ impl<'a> Macros<'a> {
         }
     }
 
+    pub(crate) fn cancel_playback(&mut self) {
+        self.queue.clear();
+    }
+
     pub(crate) fn is_playing(&self) -> bool {
         !self.queue.is_empty()
     }

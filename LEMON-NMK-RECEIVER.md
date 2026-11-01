@@ -55,3 +55,25 @@ Python 工具提取实际生产 writer 和会话判定函数，放入受控端�
 它覆盖时序行为，不是真实 USB 控制器或 Gazell 空口测试。
 队列单元测试随 RMK 主机测试运行，不需要 Gazell 硬件。
 本次不改变存储格式，不推进 `STORAGE-BASE-COMMIT`。
+
+## A/B 切换与电压接口（2026-11-01）
+
+以下功能只有应用显式调用才启用，不改变普通键盘或 BLE User 键行为：
+
+| 模块/API | 职责 | 应用负责 |
+| --- | --- | --- |
+| `receiver::switching::Control` | 两接收器、两半、四行的 Gazell v4 / ACK v2 状态机 | 无线收发、单调时钟、USB 完成确认 |
+| `switching::Config` | User ID 和断连超时；默认 `[0,1,2]`、700 ms | 选择 A/B 身份与板级参数 |
+| `Keyboard::run_with_handover` | 事件过滤、清理 LT/宏/修饰键/临时层/矩阵状态，发送全松报告 | 提供 allow、needs_reset、reset_done 回调 |
+| `Keyboard::set_external_user_actions` | 把 User 动作交给应用 ActionEvent 订阅者 | 注册订阅者，避免同时使用 BLE User 动作 |
+| `receiver::battery::BatteryStore<N>` | 保存各来源的类型、最终 mV、最近收包时间 | 解码无线包、同步 ISR/任务访问 |
+| `receiver::battery_protocol::reply` | 双侧 EBAT/1 32 字节 USB 应答 | 提供快照与接收器身份/工作状态 |
+| `receiver::battery_usb::{build,run}` | 独立 FF62/52 HID，100 ms 写入超时 | USB builder 中注册一次，并运行任务 |
+
+`run_with_handover` 代替普通 Keyboard run，不能同时运行；会自动开启 external User 模式。
+`reset_done` 仅表示内存清理和排队完成，应用仍须确认所有全松 USB 报告写入端点后，才允许 COMMIT。
+RF 参数、IRQ、扫描与矩阵映射均不属于库。状态机的协议尺寸固定，不支持任意数量接收器。
+电池模块不采样、不换算百分比；电压由发射端换算。USB 模块内部 HID 状态单实例。
+
+参考接入：`Iemooon/lemon-kbd` 的 `ergo52-nmk/src/{receiver_switch,battery,battery_usb}.rs`。
+模块本身不新增存储记录；消费旧版 RMK 的工程升级本分支时，仍须检查已有存储格式变化并备份 Vial。

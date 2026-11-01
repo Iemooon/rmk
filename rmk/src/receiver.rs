@@ -303,3 +303,9 @@ mod tests {
         let _ = SnapshotQueue::<1, 3, 2>::new();
     }
 }
+
+pub mod battery;
+pub mod battery_protocol;
+#[cfg(not(feature = "_no_usb"))]
+pub mod battery_usb;
+pub mod switching;

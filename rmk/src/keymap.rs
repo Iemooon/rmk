@@ -556,6 +556,22 @@ impl<'a> KeyMap<'a> {
             .get_action_at(KeyboardEventSource::key_pos(col, row), layer)
     }
 
+    /// Restore the configured default layer and discard transient layer caches.
+    pub(crate) fn reset_transient_layers(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.layer_state.fill(false);
+        let default = inner.behavior.default_layer;
+        inner.layer_cache.fill(default);
+        inner.encoder_layer_cache.fill(default);
+        inner.touch_layer_cache.fill(default);
+        inner.update_tri_layer();
+    }
+
+    #[cfg(feature = "host_lock")]
+    pub(crate) fn clear_matrix_state(&self) {
+        self.inner.borrow_mut().matrix_state.clear();
+    }
+
     /// Active layer index (after layer-toggle/momentary updates).
     pub fn active_layer(&self) -> u8 {
         self.inner.borrow().get_activated_layer()

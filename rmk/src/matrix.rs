@@ -48,6 +48,11 @@ impl MatrixState {
             self.state[byte_index] = self.state[byte_index] & !(1 << bit_index) | ((pressed as u8) << bit_index);
         }
     }
+    /// Clear host diagnostics without replaying key actions.
+    pub fn clear(&mut self) {
+        self.state.fill(0);
+    }
+
     /// Copy the bitmap out in natural row-major order (bit 0 = col 0,
     /// low byte first within a row) — the Rynk `MatrixState` wire order.
     pub fn read_all(&self, target: &mut [u8]) {

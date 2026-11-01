@@ -1,7 +1,21 @@
 # lemon-nmk 新增特性与维护记录
 
-最后更新：2026-10-30。本文是 `Iemooon/rmk` 的 `lemon-nmk` 分支特性总表。
+最后更新：2026-11-01。本文是 `Iemooon/rmk` 的 `lemon-nmk` 分支特性总表。
 后续新增、修改、移除本地特性及同步上游时，应在同一提交中更新本文。
+
+2026-11-01：新增显式调用启用的 [A/B 切换与电压模块](LEMON-NMK-RECEIVER.md)：
+[`receiver::switching`](rmk/src/receiver/switching.rs)、
+[`BatteryStore`](rmk/src/receiver/battery.rs)、
+[`EBAT/1`](rmk/src/receiver/battery_protocol.rs)、
+[`独立 USB HID`](rmk/src/receiver/battery_usb.rs)，以及 Keyboard 外部 User 动作模式和切换清理接口。
+默认不启用，不改变普通 BLE User 行为。协议仍限定两接收器、两半、四行；无线驱动留在应用。
+模块不改变存储格式，保留当前 `STORAGE-BASE-COMMIT`；旧固件迁移仍需备份 Vial。
+
+本次验证：`std,log,split,vial,host_lock,storage,async_matrix` 主机 619 项通过，
+日志 `target/receiver-modules-no-ble.log`；Ergo52 52833 release 固件链接通过。
+含 `_ble` 的完整及库测试均被上游 embassy-crypto 后端未解析符号阻止链接，未执行，
+见 `target/receiver-modules-tests.log` 与 `target/receiver-modules-focused.log`。
+无线切换、USB 断连和实际功耗未重新实机验收。历史测试结果不代表本次重跑。
 
 ## 分支用途与基线
 

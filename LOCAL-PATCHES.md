@@ -2,6 +2,15 @@ Base: rmk-rs/rmk 71556128fa72881fc35f0bf6c292d5e28ad9568d
 
 Maintained feature index (Chinese): [LEMON-NMK-FEATURES.md](LEMON-NMK-FEATURES.md).
 
+2026-11-01: Extracted opt-in Gazell v4 A/B switching, generic per-source battery
+storage, EBAT/1 and independent battery USB HID modules under `rmk/src/receiver/`.
+Keyboard handover APIs clear transient LT, layers, macros, reports and matrix state;
+external User routing defaults off. RF/board configuration remains application-owned.
+No storage schema change. See LEMON-NMK-RECEIVER.md for integration constraints.
+Current verification: 619 no-BLE host tests passed and Ergo52 nRF52833 firmware
+linked. BLE host tests did not execute because upstream embassy-crypto backend
+symbols failed to link. Hardware switching/power acceptance remains outstanding.
+
 NMK receiver branch synchronized with dynamic-layers and upstream main.
 Local patches: dynamic layer APIs, BLE split disconnect/offline peer fixes, and optional asynchronous DFU preparation handshake.
 
