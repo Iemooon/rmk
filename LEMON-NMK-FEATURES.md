@@ -1,7 +1,14 @@
 # lemon-nmk 新增特性与维护记录
 
-最后更新：2026-11-01。本文是 `Iemooon/rmk` 的 `lemon-nmk` 分支特性总表。
+最后更新：2026-11-07。本文是 `Iemooon/rmk` 的 `lemon-nmk` 分支特性总表。
 后续新增、修改、移除本地特性及同步上游时，应在同一提交中更新本文。
+
+2026-11-07：未启用 BLE 的固件对 Vial 休眠通道 `0xF0` 的读取和设置明确返回 `0xFF`，
+避免上位机误判支持；其他自定义通道行为不变。不改变存储格式或默认功能。
+同时修正文档和休眠测试中的命令号：读取为 `0x08`，设置为 `0x07`；测试引用
+`ViaCommand` 枚举，避免误用重置存储或 bootloader 命令。Windows 无 BLE 配置
+`vial,storage` 的 Vial 处理器测试 4 项通过（含不支持休眠的读取/设置）。
+含 BLE 的 Windows 测试仍受加密后端链接问题阻止，不计为通过；未烧录或实机验证。
 
 2026-11-01：新增显式 `battery_voltage` 功能，分体从机传最终电池 mV、充电状态和采样年龄，
 中央端仅为标准 BLE Battery Service 派生百分比。充电中或百分比不变时仍更新电压。
@@ -19,6 +26,20 @@ SDK 17.1.1（现有 52840/52833 接收器）和 nrfxlib 2.9.0（52820 soft-float
 保留 GZLL_DIR/GZLL_LIB 覆盖入口。库文件 SHA256 与两个消费工程的原副本一致。
 本次构建辅助库 host check、Ergo52 52833 release 链接通过；完整消费构建结果见接收器说明。
 本次未实机刷写，不新增芯片兼容性或无线性能结论。
+
+2026-11-06：新增 Vial 空闲休眠时间接口，启用 `vial` 和 BLE 芯片 feature 后通过通道
+`0xF0` 读写；`storage` 可选，用于重启后恢复。`0` 关闭空闲超时休眠，`30～3600` 秒有效，
+不禁止主机挂起或广播超时的主动休眠请求。清醒时设置后重新计时；已休眠时仍需活动唤醒。
+无效值或保存失败返回 `0xFF`，保存失败恢复旧值。初值来自 TOML，持久有效值优先。
+接口无需 Rynk；完整 32 字节请求/回复格式见 [README](README.md#vial-休眠时间设置)。
+新增 `SleepTimeout` 追加于存储枚举末尾，既有编号不变，保留 `STORAGE-BASE-COMMIT`；
+版本、feature、容量等身份改变仍可能清空存储，回退旧固件读取新增项未验证。
+
+2026-11-06 本次文档核对验证：基于 `024555be3` 加当前休眠工作区改动，Rust 1.99.0，
+在仓库根目录运行 `cargo check --manifest-path rmk/Cargo.toml --target thumbv7em-none-eabihf --release --no-default-features --features vial,storage,nrf52840_ble,embassy-nrf/nrf52840` 通过。
+日志 `target/sleep-doc-review-arm-check.log`。这是 ARM 目标库检查，不是完整固件链接或实机验收。
+本次未重跑 BLE 单元测试；先前记录的 Windows embassy-crypto 链接失败不计为通过。
+现有新增 Vial 测试覆盖读写、关闭及非法值；动态重新计时、休眠中修改、保存失败恢复和重启加载仍缺专项回归证据。
 
 2026-11-01：新增显式调用启用的 [A/B 切换与电压模块](LEMON-NMK-RECEIVER.md)：
 [`receiver::switching`](rmk/src/receiver/switching.rs)、
@@ -40,7 +61,7 @@ SDK 17.1.1（现有 52840/52833 接收器）和 nrfxlib 2.9.0（52820 soft-float
 分支名称不会选择无线协议；实际协议、RF 参数、引脚、矩阵、USB 名称、分区、
 Vial 解锁设置仍由各固件工程配置。Gazell 无线收发实现也仍属于应用工程。
 
-- 当前上游基线：`71556128fa72881fc35f0bf6c292d5e28ad9568d`。
+- 当前上游基线：`bba0f24bf59e142f684c38c37193ae5a45653e9d`。
 - 原 `dynamic-layers` 已完整合入本分支，旧分支已删除。
 - 原 `vendor/rmk`、`vendor/rmk-cck`、`vendor/rmk-lily58` 的公共补丁已核对覆盖。
 - 库功能统一不代表所有键盘已迁移依赖，也不代表所有实物已验收。
@@ -64,6 +85,7 @@ Vial 解锁设置仍由各固件工程配置。Gazell 无线收发实现也仍�
 | 软件进入 DFU 前清持久标记 | **52833 窗口任务的配套行为** | 与上项一起启用，不需要修改 Vial 协议 | [boot.rs](rmk/src/boot.rs)、[接入说明](LEMON-NMK-DFU.md) |
 | 稳定存储格式基线 | 启用存储的应用 | 自动使用分支中的基线文件 | [STORAGE-BASE-COMMIT](STORAGE-BASE-COMMIT)、[build.rs](rmk/build.rs) |
 | BLE 并发任务减少临时栈占用 | BLE 键盘中央端 | 自动使用，不改变协议与任务调度顺序 | [ble/mod.rs](rmk/src/ble/mod.rs) |
+| Vial 空闲休眠时间设置 | BLE 键盘 | 启用 `vial` 和 BLE 芯片 feature；通道 `0xF0` 读写，`storage` 可选用于持久保存 | [host/via/mod.rs](rmk/src/host/via/mod.rs)、[ble/sleep.rs](rmk/src/ble/sleep.rs)、[storage/mod.rs](rmk/src/storage/mod.rs) |
 
 ### USB 唤醒与重连保护（2026-10-27）
 
@@ -198,6 +220,8 @@ USB 工具已接入 `scripts/test_all.sh` 和 `.github/ci/test.sh`；未运行�
 
 | 日期 | 提交或事件 | 变更 |
 | --- | --- | --- |
+| 2026-11-06 | Vial 空闲休眠设置（工作区改动） | 新增运行时设置与持久项；明确 0 的范围、休眠中修改和存储兼容边界；验证见本文记录 |
+| 2026-11-01 | `4317ebb53` | 合入上游 `bba0f24bf`，保留本地功能；历史验证见同步记录 |
 | 2026-10-27 | 接收器可靠性补丁 | 迁入 USB 唤醒/重连保护，新增可复用完整状态队列和回归；无存储格式变化 |
 | 2026-10-27 | `c5586b1e5`、`bd07c8535` | 合入动态层和上游更新，推进存储格式基线 |
 | 2026-10-27 | `e3623fee5` | 明确 BLE/NMK 统一分支及公共补丁范围 |

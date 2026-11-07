@@ -1,6 +1,26 @@
-Base: rmk-rs/rmk 71556128fa72881fc35f0bf6c292d5e28ad9568d
+Base: rmk-rs/rmk bba0f24bf59e142f684c38c37193ae5a45653e9d
 
 Maintained feature index (Chinese): [LEMON-NMK-FEATURES.md](LEMON-NMK-FEATURES.md).
+
+2026-11-07: Without BLE, Vial channel 0xF0 get/set requests now return 0xFF
+instead of echoing a successful-looking response. Other channels are unchanged.
+Corrected sleep protocol documentation and tests to use CustomGetValue (0x08)
+and CustomSetValue (0x07); tests now reference the enum. All four Vial handler
+tests passed on Windows with vial,storage and no BLE. No hardware validation.
+
+2026-11-06: Vial channel 0xF0 adds runtime BLE idle timeout configuration
+(0 disables idle expiry; 30–3600 seconds accepted). Requires Vial and BLE;
+storage is optional. Explicit sleep requests still apply at zero. Changes while
+asleep are consumed after activity wakes the manager. Failed storage writes
+restore the previous value and report 0xFF. See README.md for the wire format.
+SleepTimeout is appended to StorageKey/StorageValue, preserving existing tags.
+STORAGE-BASE-COMMIT is retained; version, feature and capacity changes still affect
+schema identity. Downgrade reading of the new item has not been verified.
+ARM release library check passed on Rust 1.99.0; command, source state, log and
+remaining test gaps are recorded in LEMON-NMK-FEATURES.md. No hardware acceptance.
+
+2026-11-01: Merge 4317ebb53 integrated upstream main bba0f24bf. This updates the
+upstream baseline independently of the retained storage baseline.
 
 2026-11-01: Added independent opt-in `rmk-gazell` build dependency with unchanged
 Nordic SDK 17.1.1 and nrfxlib 2.9.0 archives, provenance and original licenses.

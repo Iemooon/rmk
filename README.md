@@ -1,6 +1,6 @@
 # lemon-nmk 分支改动
 
-本分支基于 [rmk-rs/rmk](https://github.com/rmk-rs/rmk)，统一维护 BLE 和 NMK/Gazell 应用使用的公共补丁。当前上游基线为 [`71556128`](https://github.com/rmk-rs/rmk/commit/71556128fa72881fc35f0bf6c292d5e28ad9568d)。
+本分支基于 [rmk-rs/rmk](https://github.com/rmk-rs/rmk)，统一维护 BLE 和 NMK/Gazell 应用使用的公共补丁。当前上游基线为 [`bba0f24bf`](https://github.com/rmk-rs/rmk/commit/bba0f24bf59e142f684c38c37193ae5a45653e9d)。
 
 ## 相对上游的改动
 
@@ -21,6 +21,7 @@
 | nRF52833 DFU 窗口 | 默认关闭。启用 `nrf52833_dfu_window` 并运行窗口任务后，第 15～50 秒间断电再上电可进入 bootloader；软件 DFU 前先清除并确认持久标记。 | [dfu_window.rs](rmk/src/dfu_window.rs)、[dfu_window/policy.rs](rmk/src/dfu_window/policy.rs)、[boot.rs](rmk/src/boot.rs) |
 | 稳定存储格式基线 | 存储构建自动使用 `STORAGE-BASE-COMMIT` 标识格式，避免普通实现提交导致存储身份变化；格式变化时仍须推进基线。 | [STORAGE-BASE-COMMIT](STORAGE-BASE-COMMIT)、[rmk/build.rs](rmk/build.rs) |
 | BLE future 栈占用优化 | 自动用于 BLE 中央端对应任务组合，原位固定并发子 future，再向 join 传递引用，减少大型临时 future 的搬运。 | [ble/mod.rs](rmk/src/ble/mod.rs) |
+| Vial 休眠时间设置 | 启用 `vial` 和 BLE 芯片 feature 后，可通过自定义通道读写空闲休眠秒数；`0` 关闭空闲超时休眠，`30～3600` 有效。启用 `storage` 时持久保存，无需 Rynk。 | [host/via/mod.rs](rmk/src/host/via/mod.rs)、[ble/sleep.rs](rmk/src/ble/sleep.rs)、[storage/mod.rs](rmk/src/storage/mod.rs) |
 | 显示接收器电量快照 | 提供按需 WBAT v1 查询和接收端状态跟踪，需 `custom_message`；应用显式接入并负责左右电量与断线状态映射。与 EBAT 电压接口独立。 | [battery_snapshot.rs](rmk/src/battery_snapshot.rs)、[battery_snapshot_responder.rs](rmk/src/battery_snapshot_responder.rs) |
 | 显示修饰键事件 | 显示处理器暂存快速修饰键变化直到渲染器读取，不影响 HID 报告；应用渲染器可读取暂存状态。 | [display/mod.rs](rmk/src/display/mod.rs) |
 
@@ -33,6 +34,25 @@
 `external_user_actions` 默认是 false，普通 BLE User 键行为保持原有路径。
 `run_with_handover()` 会开启外部 User 动作模式，由应用的 ActionEvent 订阅者处理 User 键。
 清理回调完成仅表示状态已清理、全松报告已排队；切换应用仍须确认 USB 报告实际写入端点后再允许 COMMIT。
+
+### Vial 休眠时间设置
+
+启用 `vial` 和 BLE 芯片 feature（例如 `nrf52840_ble`）后，固件提供一个 RMK 自定义 Vial 通道，供 `wk-kbd-app` 等上位机配置。`storage` 用于持久保存；未启用时设置仅在本次运行有效。
+
+请求和回复均为 32 字节报告，未使用字节填零：
+
+- 读取：字节 0 为 `0x08`（`CustomGetValue`），字节 1 为通道 `0xF0`；回复字节 2～5 为大端 `u32` 秒数。
+- 设置：字节 0 为 `0x07`（`CustomSetValue`），字节 1 为 `0xF0`，字节 2～5 为大端 `u32` 秒数。成功时回复保留命令及设置值，不需要额外发送 `CustomSave`。
+- `0` 关闭空闲超时休眠，`30～3600` 秒有效；无效值或存储写入失败时，回复字节 0 为 `0xFF`。写入失败会恢复原设置。
+- 未启用 BLE 的固件收到通道 `0xF0` 的读取或设置请求时，回复字节 0 为 `0xFF`，表示不支持。
+
+没有有效持久设置时，初值来自 `[rmk].split_central_sleep_timeout_seconds`，默认 `0`。名称虽含 split，管理器也用于非分体 BLE 键盘。上述范围约束针对运行时设置接口。
+
+清醒时修改设置会通知管理器按新值重新计时；已经休眠时不会立即唤醒，仍需按键或指针等活动，随后应用新值。`0` 不阻止主机 HID 挂起、广播超时等主动休眠请求。这里控制的是 RMK 逻辑休眠，不代表关闭蓝牙或进入芯片 SYSTEMOFF，也不保证断线重连后保留用于唤醒的第一次输入。
+
+启用 `storage` 时，设置写入成功后可在重启时恢复。新增存储项追加在枚举末尾，既有记录编号不变，保留 `STORAGE-BASE-COMMIT`；只有版本、feature 和容量等存储身份一致时才能沿用旧记录。回退旧固件无法识别新增项，未验证回退兼容性。
+
+这是 Vial Raw HID 扩展，不需要启用 Rynk，也不会改变标准 Vial 键位、宏和灯光命令。固件重新编译后上位机才可使用；静态编译检查不代表实机功耗或休眠唤醒已验收。
 
 ## 接入与兼容性
 

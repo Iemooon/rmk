@@ -126,12 +126,52 @@ impl<'a> VialService<'a> {
                 warn!("Dynamic keymap reset -- not supported")
             }
             ViaCommand::CustomSetValue => {
-                // backlight/rgblight/rgb matrix/led matrix/audio settings here
-                warn!("Custom set value -- not supported")
+                // RMK extension: custom channel 0xF0 stores the BLE idle-sleep
+                // timeout in seconds as a big-endian u32 at bytes 2..6.
+                #[cfg(feature = "_ble")]
+                if report.output_data[1] == 0xF0 {
+                    let seconds = BigEndian::read_u32(&report.output_data[2..6]);
+                    let previous = crate::ble::sleep::sleep_timeout_seconds();
+                    if !crate::ble::sleep::set_sleep_timeout_seconds(seconds) {
+                        report.input_data[0] = 0xFF;
+                    } else {
+                        #[cfg(feature = "storage")]
+                        if crate::storage::store(crate::storage::StorageItem::SleepTimeout(seconds))
+                            .await
+                            .is_err()
+                        {
+                            crate::ble::sleep::set_sleep_timeout_seconds(previous);
+                            report.input_data[0] = 0xFF;
+                        }
+                    }
+                } else {
+                    warn!("Custom set value -- unsupported channel");
+                }
+                #[cfg(not(feature = "_ble"))]
+                {
+                    if report.output_data[1] == 0xF0 {
+                        report.input_data[0] = 0xFF;
+                    }
+                    warn!("Custom set value -- BLE sleep is unavailable");
+                }
             }
             ViaCommand::CustomGetValue => {
-                // backlight/rgblight/rgb matrix/led matrix/audio settings here
-                warn!("Custom get value -- not supported")
+                #[cfg(feature = "_ble")]
+                if report.output_data[1] == 0xF0 {
+                    BigEndian::write_u32(
+                        &mut report.input_data[2..6],
+                        crate::ble::sleep::sleep_timeout_seconds(),
+                    );
+                } else {
+                    warn!("Custom get value -- unsupported channel");
+                }
+                #[cfg(not(feature = "_ble"))]
+                {
+                    if report.output_data[1] == 0xF0 {
+                        report.input_data[0] = 0xFF;
+                    }
+                    warn!("Custom get value -- BLE sleep is unavailable");
+                }
             }
             ViaCommand::CustomSave => {
                 // backlight/rgblight/rgb matrix/led matrix/audio settings here
@@ -378,6 +418,61 @@ mod tests {
             let mut get = layout_options_report(0x02, 0);
             process(service, &mut get);
             assert_eq!(BigEndian::read_u32(&get.input_data[2..6]), 0x00C0_FFEE);
+        });
+    }
+
+    fn sleep_report(command_id: u8, seconds: u32) -> ViaReport {
+        let mut output_data = [0u8; 32];
+        output_data[0] = command_id;
+        output_data[1] = 0xF0;
+        BigEndian::write_u32(&mut output_data[2..6], seconds);
+        ViaReport {
+            input_data: output_data,
+            output_data,
+        }
+    }
+
+    #[cfg(not(feature = "_ble"))]
+    #[test]
+    fn sleep_timeout_vial_rejects_without_ble() {
+        with_service(|service| {
+            for command_id in [ViaCommand::CustomGetValue as u8, ViaCommand::CustomSetValue as u8] {
+                let mut report = sleep_report(command_id, 600);
+                process(service, &mut report);
+                assert_eq!(report.input_data[0], 0xFF);
+            }
+        });
+    }
+
+    #[cfg(feature = "_ble")]
+    #[test]
+    fn sleep_timeout_vial_roundtrip() {
+        with_service(|service| {
+            let mut set = sleep_report(ViaCommand::CustomSetValue as u8, 600);
+            process(service, &mut set);
+            assert_eq!(set.input_data[0], ViaCommand::CustomSetValue as u8);
+
+            let mut get = sleep_report(ViaCommand::CustomGetValue as u8, 0);
+            process(service, &mut get);
+            assert_eq!(BigEndian::read_u32(&get.input_data[2..6]), 600);
+
+            let mut disable = sleep_report(ViaCommand::CustomSetValue as u8, 0);
+            process(service, &mut disable);
+            let mut get_disabled = sleep_report(ViaCommand::CustomGetValue as u8, 0);
+            process(service, &mut get_disabled);
+            assert_eq!(BigEndian::read_u32(&get_disabled.input_data[2..6]), 0);
+        });
+    }
+
+    #[cfg(feature = "_ble")]
+    #[test]
+    fn sleep_timeout_vial_rejects_invalid_values() {
+        with_service(|service| {
+            for seconds in [1, 29, 3601] {
+                let mut set = sleep_report(ViaCommand::CustomSetValue as u8, seconds);
+                process(service, &mut set);
+                assert_eq!(set.input_data[0], 0xFF, "invalid timeout {seconds} accepted");
+            }
         });
     }
 }

@@ -62,6 +62,15 @@ split_central_sleep_timeout_seconds = 600
 
 When the keyboard falls asleep, RMK publishes a `SleepStateEvent`, holds battery level reports, and on a split central switches the peripheral links to slower connection parameters. Any key press wakes the keyboard up. The host's HID suspend and exit-suspend commands also put the keyboard to sleep and wake it.
 
+On the `lemon-nmk` fork, Vial channel `0xF0` can override the idle timeout at runtime
+(`vial` and a BLE chip feature required). Zero disables idle expiry, while runtime
+nonzero values must be 30–3600 seconds. Explicit sleep requests, including HID
+suspend and advertising timeout, still apply at zero. Changes restart the timer
+while awake; a sleeping keyboard waits for activity before applying them.
+With `storage`, a saved timeout overrides the TOML default on startup; without it,
+the setting lasts only until restart. See the [fork protocol documentation](https://github.com/Iemooon/rmk/blob/lemon-nmk/README.md#vial-休眠时间设置).
+This is logical sleep, not a guarantee of radio shutdown or SYSTEMOFF.
+
 A sleeping split central keeps its radio idle rather than scanning, so a peripheral link that drops gets a single reconnect attempt. If that attempt fails, the central keeps the peripheral's address: press a key on the central half while the peripheral is still advertising (about five minutes) and the halves relink instead of rediscovering each other. After that the peripheral stops advertising too, so it takes a key press on each half to bring the link back.
 
 Two related behaviors are always on:

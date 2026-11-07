@@ -157,6 +157,8 @@ pub(crate) enum StorageKey {
     BondInfo(u8),
     /// A slot the board defines, see [`store_user_data`].
     UserData(u8),
+    #[cfg(feature = "_ble")]
+    SleepTimeout,
 }
 
 /// A Storage item is actually a storage (key, value) pair.
@@ -211,6 +213,8 @@ pub(crate) enum StorageItem {
         slot: u8,
         data: heapless::Vec<u8, USER_DATA_MAX_SIZE>,
     },
+    #[cfg(feature = "_ble")]
+    SleepTimeout(u32),
 }
 
 impl StorageItem {
@@ -247,6 +251,8 @@ impl StorageItem {
             #[cfg(feature = "_ble")]
             Self::ActiveBleProfile(v) => (StorageKey::ActiveBleProfile, StorageValue::ActiveBleProfile(v)),
             Self::UserData { slot, data } => (StorageKey::UserData(slot), StorageValue::UserData(data)),
+            #[cfg(feature = "_ble")]
+            Self::SleepTimeout(v) => (StorageKey::SleepTimeout, StorageValue::SleepTimeout(v)),
         }
     }
 }
@@ -296,6 +302,8 @@ pub(crate) enum StorageValue {
     #[cfg(feature = "_ble")]
     ActiveBleProfile(u8),
     UserData(heapless::Vec<u8, USER_DATA_MAX_SIZE>),
+    #[cfg(feature = "_ble")]
+    SleepTimeout(u32),
 }
 
 impl<'a> PostcardValue<'a> for StorageValue {}

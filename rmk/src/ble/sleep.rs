@@ -6,7 +6,7 @@
 //! display, and on split centrals the per-link connection-parameter followers
 //! in `split::ble::central`.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use embassy_futures::select::{Either, select};
 use embassy_sync::signal::Signal;
@@ -14,6 +14,9 @@ use embassy_time::{Duration, Timer};
 
 use crate::SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS;
 use crate::event::{SleepStateEvent, publish_event};
+
+pub(crate) const SLEEP_TIMEOUT_MIN_SECONDS: u32 = 30;
+pub(crate) const SLEEP_TIMEOUT_MAX_SECONDS: u32 = 3600;
 
 /// The latched sleep state.
 /// - `true`: the keyboard is idle and sleeping
@@ -24,6 +27,21 @@ pub(crate) static SLEEPING_STATE: AtomicBool = AtomicBool::new(false);
 /// - `true`: sleep now, without waiting out the idle timeout
 /// - `false`: activity — wake up, or restart the idle timeout
 static SLEEP_INPUT: Signal<crate::RawMutex, bool> = Signal::new();
+static TIMEOUT_CHANGED: Signal<crate::RawMutex, ()> = Signal::new();
+static SLEEP_TIMEOUT_SECONDS: AtomicU32 = AtomicU32::new(SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS);
+
+pub(crate) fn sleep_timeout_seconds() -> u32 {
+    SLEEP_TIMEOUT_SECONDS.load(Ordering::Acquire)
+}
+
+pub(crate) fn set_sleep_timeout_seconds(seconds: u32) -> bool {
+    if seconds != 0 && !(SLEEP_TIMEOUT_MIN_SECONDS..=SLEEP_TIMEOUT_MAX_SECONDS).contains(&seconds) {
+        return false;
+    }
+    SLEEP_TIMEOUT_SECONDS.store(seconds, Ordering::Release);
+    TIMEOUT_CHANGED.signal(());
+    true
+}
 
 /// Report keyboard activity: wake the keyboard up, or restart the idle timeout
 /// when it's already awake.
@@ -44,30 +62,57 @@ pub(crate) fn request_sleep() {
 /// reach it. Disabled when the configured timeout
 /// (`split_central_sleep_timeout_seconds`) is 0, the default.
 pub(crate) async fn run_sleep_manager() {
-    if SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS == 0 {
-        info!("Sleep management disabled (timeout = 0)");
-        core::future::pending::<()>().await;
-        return;
+    #[cfg(feature = "storage")]
+    if let Ok(Some(crate::storage::StorageValue::SleepTimeout(seconds))) =
+        crate::storage::read(crate::storage::StorageKey::SleepTimeout).await
+    {
+        if set_sleep_timeout_seconds(seconds) {
+            info!("Loaded sleep timeout: {}s", seconds);
+        }
     }
 
-    info!(
-        "Sleep manager started with {}s timeout",
-        SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS
-    );
-    manage_sleep_state(Duration::from_secs(SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS.into())).await
+    info!("Sleep manager started with {}s timeout", sleep_timeout_seconds());
+    manage_sleep_state(Duration::from_secs(sleep_timeout_seconds().into())).await
 }
 
 /// The sleep state machine, separate from [`run_sleep_manager`] only so tests
 /// can drive it with a short timeout (the configured one is 0 in test builds).
 async fn manage_sleep_state(idle_timeout: Duration) -> ! {
+    let mut idle_timeout = idle_timeout;
+    let mut timeout_disabled = idle_timeout == Duration::from_secs(0);
     loop {
         // Awake: sleep once the keyboard has been idle for `idle_timeout`, or as
         // soon as something asks us to. The input is polled first so activity
         // racing the timeout wins the tie instead of causing a spurious sleep.
         loop {
-            match select(SLEEP_INPUT.wait(), Timer::after(idle_timeout)).await {
-                Either::First(true) | Either::Second(_) => break,
-                Either::First(false) => debug!("Activity detected, resetting sleep timeout"),
+            if timeout_disabled {
+                match select(SLEEP_INPUT.wait(), TIMEOUT_CHANGED.wait()).await {
+                    Either::First(true) => break,
+                    Either::First(false) => debug!("Activity detected while sleep is disabled"),
+                    Either::Second(_) => {
+                        let seconds = sleep_timeout_seconds();
+                        idle_timeout = Duration::from_secs(seconds.into());
+                        timeout_disabled = seconds == 0;
+                        if !timeout_disabled {
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                match select(
+                    SLEEP_INPUT.wait(),
+                    select(TIMEOUT_CHANGED.wait(), Timer::after(idle_timeout)),
+                )
+                .await
+                {
+                    Either::First(true) | Either::Second(Either::Second(_)) => break,
+                    Either::First(false) => debug!("Activity detected, resetting sleep timeout"),
+                    Either::Second(Either::First(_)) => {
+                        let seconds = sleep_timeout_seconds();
+                        idle_timeout = Duration::from_secs(seconds.into());
+                        timeout_disabled = seconds == 0;
+                    }
+                }
             }
         }
         info!("Entering sleep mode");
