@@ -6,13 +6,13 @@ use embassy_futures::select::{Either, select};
 #[cfg(not(feature = "_ble"))]
 use embedded_io_async::{Read, Write};
 use futures::FutureExt;
+#[cfg(feature = "_ble")]
+use trouble_host::prelude::*;
 #[cfg(all(feature = "_ble", feature = "storage"))]
 use {
     super::ble::PeerAddress,
     crate::storage::{StorageItem, store_unchecked},
 };
-#[cfg(feature = "_ble")]
-use {crate::event::EventSubscriber, trouble_host::prelude::*};
 
 use super::SplitMessage;
 use super::driver::{SplitReader, SplitWriter};
@@ -27,8 +27,8 @@ use crate::event::BatteryVoltageEvent as BatteryStatusEvent;
 #[cfg(feature = "dfu_split")]
 use crate::event::DfuCmdEvent;
 use crate::event::{
-    KeyboardEvent, LayerChangeEvent, LedIndicatorEvent, PointingEvent, SleepStateEvent, SubscribableEvent,
-    publish_event,
+    BatteryStatusEvent, EventSubscriber, KeyboardEvent, LayerChangeEvent, LedIndicatorEvent, PointingEvent,
+    SleepStateEvent, SubscribableEvent, publish_event,
 };
 #[cfg(feature = "display")]
 use crate::event::{ModifierEvent, WpmUpdateEvent};
@@ -110,7 +110,6 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
 
         let mut key_sub = KeyboardEvent::subscriber();
         let mut pointing_sub = PointingEvent::subscriber();
-        #[cfg(feature = "_ble")]
         let mut battery_sub = BatteryStatusEvent::subscriber();
 
         loop {
@@ -118,7 +117,7 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                 crate::select_biased_with_feature! {
                     e = key_sub.next_message_pure().fuse() => SplitMessage::Key(e),
                     e = pointing_sub.next_message_pure().fuse() => SplitMessage::Pointing(e),
-                    with_feature("_ble"): e = battery_sub.next_event().fuse() => {
+                    e = battery_sub.next_event().fuse() => {
                         #[cfg(feature = "battery_voltage")]
                         { let _ = e; SplitMessage::BatteryVoltage(crate::input_device::battery::current_battery_voltage()) }
                         #[cfg(not(feature = "battery_voltage"))]
