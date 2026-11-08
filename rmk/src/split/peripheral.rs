@@ -20,15 +20,16 @@ use super::driver::{SplitReader, SplitWriter};
 use crate::ble::ExtAdvCmds;
 #[cfg(feature = "dfu_split")]
 use crate::dfu::{DfuCmd, DfuTarget, SPLIT_RESPONSE_CHANNEL, SplitResponse};
-#[cfg(all(feature = "_ble", not(feature = "battery_voltage")))]
+// BLE peripherals forward voltage instead of a percentage when `battery_voltage` is on.
+#[cfg(not(all(feature = "_ble", feature = "battery_voltage")))]
 use crate::event::BatteryStatusEvent;
 #[cfg(all(feature = "_ble", feature = "battery_voltage"))]
 use crate::event::BatteryVoltageEvent as BatteryStatusEvent;
 #[cfg(feature = "dfu_split")]
 use crate::event::DfuCmdEvent;
 use crate::event::{
-    BatteryStatusEvent, EventSubscriber, KeyboardEvent, LayerChangeEvent, LedIndicatorEvent, PointingEvent,
-    SleepStateEvent, SubscribableEvent, publish_event,
+    EventSubscriber, KeyboardEvent, LayerChangeEvent, LedIndicatorEvent, PointingEvent, SleepStateEvent,
+    SubscribableEvent, publish_event,
 };
 #[cfg(feature = "display")]
 use crate::event::{ModifierEvent, WpmUpdateEvent};

@@ -1,7 +1,19 @@
 # lemon-nmk 新增特性与维护记录
 
-最后更新：2026-11-07。本文是 `Iemooon/rmk` 的 `lemon-nmk` 分支特性总表。
+最后更新：2026-11-08。本文是 `Iemooon/rmk` 的 `lemon-nmk` 分支特性总表。
 后续新增、修改、移除本地特性及同步上游时，应在同一提交中更新本文。
+
+2026-11-08：修复 `split` 加 BLE 时的编译失败。上游 `22918e7a3` 把 `BatteryStatusEvent`
+移出 `_ble` 门控后，本地电压补丁里按旧前提写的互斥导入变成了重复导入，`split` 加 BLE
+的两种组合都报 `E0252`；`.github/ci/_lib.sh` 的 featureset 4、5 都会命中。
+导入收敛为单一来源：`battery_voltage` 开启时用 `BatteryVoltageEvent` 别名，其余情况直接
+用 `BatteryStatusEvent`，分组导入不再重复列出。同时修正 `BatteryProcessor` 电压换算把
+`NonZeroU32` 当整数用导致的 4 个类型错误，取值改为 `.get()`，并去掉 `NonZeroU32` 上
+多余的零值过滤。行为不变，不改变存储格式或 feature 默认值。
+本次验证仅在宿主机 `rmk/` 目录用 `cargo check --no-default-features` 跑通
+`.github/ci/_lib.sh` 全部 8 组 featureset，另加 `split,vial,storage,async_matrix,_ble,battery_voltage`
+组合；未做 ARM 目标构建、未烧录、未实机验收。
+`battery_voltage` 目前不在任何 CI featureset 中，是这次漏检的原因，建议后续补进矩阵。
 
 2026-11-07：未启用 BLE 的固件对 Vial 休眠通道 `0xF0` 的读取和设置明确返回 `0xFF`，
 避免上位机误判支持；其他自定义通道行为不变。不改变存储格式或默认功能。
@@ -86,6 +98,7 @@ Vial 解锁设置仍由各固件工程配置。Gazell 无线收发实现也仍�
 | 稳定存储格式基线 | 启用存储的应用 | 自动使用分支中的基线文件 | [STORAGE-BASE-COMMIT](STORAGE-BASE-COMMIT)、[build.rs](rmk/build.rs) |
 | BLE 并发任务减少临时栈占用 | BLE 键盘中央端 | 自动使用，不改变协议与任务调度顺序 | [ble/mod.rs](rmk/src/ble/mod.rs) |
 | Vial 空闲休眠时间设置 | BLE 键盘 | 启用 `vial` 和 BLE 芯片 feature；通道 `0xF0` 读写，`storage` 可选用于持久保存 | [host/via/mod.rs](rmk/src/host/via/mod.rs)、[ble/sleep.rs](rmk/src/ble/sleep.rs)、[storage/mod.rs](rmk/src/storage/mod.rs) |
+| 分体电池电压上报 | BLE 分体从机到中央端 | 显式启用 `battery_voltage`，配合 BLE 芯片 feature 与 `split`，默认关闭 | [peripheral.rs](rmk/src/split/peripheral.rs)、[battery.rs](rmk/src/input_device/battery.rs)、[接入说明](LEMON-NMK-RECEIVER.md) |
 
 ### USB 唤醒与重连保护（2026-10-27）
 

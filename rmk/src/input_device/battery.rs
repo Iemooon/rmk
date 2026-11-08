@@ -145,10 +145,11 @@ impl BatteryProcessor {
         let val = event.0;
         trace!("Detected battery ADC value: {:?}", val);
         #[cfg(feature = "battery_voltage")]
-        if let Some((measured, total)) = self.adc_divider.filter(|(m, t)| *m > 0 && *t > 0) {
+        if let Some((measured, total)) = self.adc_divider {
             VOLTAGE.lock(|cache| {
                 let mut state = cache.get();
-                state.value.millivolts = u16::try_from(u64::from(val) * u64::from(total) / u64::from(measured)).ok();
+                state.value.millivolts =
+                    u16::try_from(u64::from(val) * u64::from(total.get()) / u64::from(measured.get())).ok();
                 state.sampled_at_ms = Some(embassy_time::Instant::now().as_millis());
                 cache.set(state);
             });
