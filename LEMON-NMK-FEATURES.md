@@ -1,7 +1,26 @@
 # lemon-nmk 新增特性与维护记录
 
-最后更新：2026-11-08。本文是 `Iemooon/rmk` 的 `lemon-nmk` 分支特性总表。
+最后更新：2026-11-13。本文是 `Iemooon/rmk` 的 `lemon-nmk` 分支特性总表。
 后续新增、修改、移除本地特性及同步上游时，应在同一提交中更新本文。
+
+2026-11-13：合入上游 main `708c9ee32`，并确认本分支不再有任何 nRF54 定制。
+此前的 nRF54 试验提交已随 `a7723b2c7` 回退删除，之后只剩 `3c9971a75` / `2745897ef`
+这条互相抵消的商品名改动。核对方式：`git diff upstream/main..HEAD` 中没有任何含
+`nrf54` / `54lm20` / `54l15` 的新增或删除行，`nrf54lm20`、`nrf54l15` 的 feature、
+watchdog 门控、`examples/use_rust/nrf54lm20_ble`、`nrf54l15_ble` 以及 CI skiplist
+全部来自上游。本次合并后这两个示例目录与 `upstream/main` 逐字节相同，后续上游对
+nRF54 的改动照常跟随，本分支不再维护 nRF54 相关分支逻辑。
+
+本次同步带来的四类上游改动，处理方式如下：
+
+1. embassy 全部改为 git patch，pin 在 `12b84e3dd`，且 patch 只在根 workspace 生效，
+   每个 example 各自复制了一份；依赖版本同时抬到 `fixed 1.31`、`pio 0.4`。
+2. 休眠管理器由 `rmk/src/ble/sleep.rs` 搬到顶层 `rmk/src/sleep.rs`，改由
+   `Keyboard::run` 与主循环 `join` 启动，不再占用 BLE 任务的 `join4`。
+   本地运行期可变超时、`TIMEOUT_CHANGED` 信号和存储读取都随文件迁移保留。
+3. `Render` trait 异步化（`async fn render`），所有板级 Renderer 实现改为 async。
+4. 新增 21 个键码（`Ac*` 15 个、`Media*` 5 个、`ScreenLock`、`SnapShot`、
+   `NextKeyboardLayoutSelect`），属于上游功能，直接跟随。
 
 2026-11-08：修复 `split` 加 BLE 时的编译失败。上游 `22918e7a3` 把 `BatteryStatusEvent`
 移出 `_ble` 门控后，本地电压补丁里按旧前提写的互斥导入变成了重复导入，`split` 加 BLE
@@ -73,7 +92,7 @@ SDK 17.1.1（现有 52840/52833 接收器）和 nrfxlib 2.9.0（52820 soft-float
 分支名称不会选择无线协议；实际协议、RF 参数、引脚、矩阵、USB 名称、分区、
 Vial 解锁设置仍由各固件工程配置。Gazell 无线收发实现也仍属于应用工程。
 
-- 当前上游基线：`bba0f24bf59e142f684c38c37193ae5a45653e9d`。
+- 当前上游基线：`708c9ee32f96ac345295819c0925aff2b6a80105`。
 - 原 `dynamic-layers` 已完整合入本分支，旧分支已删除。
 - 原 `vendor/rmk`、`vendor/rmk-cck`、`vendor/rmk-lily58` 的公共补丁已核对覆盖。
 - 库功能统一不代表所有键盘已迁移依赖，也不代表所有实物已验收。
@@ -97,7 +116,7 @@ Vial 解锁设置仍由各固件工程配置。Gazell 无线收发实现也仍�
 | 软件进入 DFU 前清持久标记 | **52833 窗口任务的配套行为** | 与上项一起启用，不需要修改 Vial 协议 | [boot.rs](rmk/src/boot.rs)、[接入说明](LEMON-NMK-DFU.md) |
 | 稳定存储格式基线 | 启用存储的应用 | 自动使用分支中的基线文件 | [STORAGE-BASE-COMMIT](STORAGE-BASE-COMMIT)、[build.rs](rmk/build.rs) |
 | BLE 并发任务减少临时栈占用 | BLE 键盘中央端 | 自动使用，不改变协议与任务调度顺序 | [ble/mod.rs](rmk/src/ble/mod.rs) |
-| Vial 空闲休眠时间设置 | BLE 键盘 | 启用 `vial` 和 BLE 芯片 feature；通道 `0xF0` 读写，`storage` 可选用于持久保存 | [host/via/mod.rs](rmk/src/host/via/mod.rs)、[ble/sleep.rs](rmk/src/ble/sleep.rs)、[storage/mod.rs](rmk/src/storage/mod.rs) |
+| Vial 空闲休眠时间设置 | BLE 键盘 | 启用 `vial` 和 BLE 芯片 feature；通道 `0xF0` 读写，`storage` 可选用于持久保存 | [host/via/mod.rs](rmk/src/host/via/mod.rs)、[sleep.rs](rmk/src/sleep.rs)、[storage/mod.rs](rmk/src/storage/mod.rs) |
 | 分体电池电压上报 | BLE 分体从机到中央端 | 显式启用 `battery_voltage`，配合 BLE 芯片 feature 与 `split`，默认关闭 | [peripheral.rs](rmk/src/split/peripheral.rs)、[battery.rs](rmk/src/input_device/battery.rs)、[接入说明](LEMON-NMK-RECEIVER.md) |
 
 ### USB 唤醒与重连保护（2026-10-27）
@@ -161,6 +180,10 @@ CCK 迁移构建发现 BLE `join4` 的临时栈帧为 17792 字节，超过现�
 不调整原有栈检查阈值。修复后 CCK MO 探针构建最大单帧为 14272 字节，检查通过；
 主机 Vial/BLE 分体回归 636 项通过。完整固件及实物验收由消费工程另行记录。
 
+2026-11-13 上游把休眠管理器移出 BLE 任务后，这里变回 `join3`（GATT 服务器、
+连接循环、profile manager），原位 pin 的写法沿用；栈占用结论未重新测量，
+不能把 14272 字节当作合并后的结果。
+
 ### 存储兼容性说明
 
 普通实现提交不再直接作为存储格式身份，使用 `STORAGE-BASE-COMMIT`。
@@ -183,6 +206,9 @@ CCK 迁移构建发现 BLE `join4` 的临时栈帧为 17792 字节，超过现�
 | 52833 开启窗口，ARM 库编译 | `6107d5861` | debug/release 通过 | 库的目标编译，不含完整固件链接及分区检查 |
 | 52840 关闭窗口，ARM 库编译 | `6107d5861` | release 通过 | 其他芯片不启用的构建 |
 | 窗口与 52840 HAL 同时开启 | `6107d5861` | 按预期拒绝编译 | 错误芯片组合检查 |
+| 8 组 featureset 主机检查 | 合入 `708c9ee32` 后的工作树 | 8 组全部通过 | `cargo check`，逐组对应 `.github/ci/_lib.sh` 的 `RMK_TEST_FEATURESETS` |
+| Vial/分体/存储主机测试 | 合入 `708c9ee32` 后的工作树 | 629 项通过 | `split,vial,storage,async_matrix`，含 7 项休眠测试（0 超时语义、键盘活动、指向设备） |
+| nRF52840 BLE 完整固件 | 合入 `708c9ee32` 后的工作树 | release 构建通过 | `examples/use_config/nrf52840_ble`，ARM 链接，含异步 `Render` 与上游 embassy patch |
 
 主机测试通用命令，在仓库根目录执行：
 
@@ -233,6 +259,7 @@ USB 工具已接入 `scripts/test_all.sh` 和 `.github/ci/test.sh`；未运行�
 
 | 日期 | 提交或事件 | 变更 |
 | --- | --- | --- |
+| 2026-11-13 | 合入上游 `708c9ee32` | 确认并清空 nRF54 定制；embassy 改 patch 到 `12b84e3dd`；休眠管理器移到顶层 `sleep.rs` 并由 `Keyboard::run` 启动；`Render` 异步化；新增 21 个键码 |
 | 2026-11-06 | Vial 空闲休眠设置（工作区改动） | 新增运行时设置与持久项；明确 0 的范围、休眠中修改和存储兼容边界；验证见本文记录 |
 | 2026-11-01 | `4317ebb53` | 合入上游 `bba0f24bf`，保留本地功能；历史验证见同步记录 |
 | 2026-10-27 | 接收器可靠性补丁 | 迁入 USB 唤醒/重连保护，新增可复用完整状态队列和回归；无存储格式变化 |
@@ -255,3 +282,50 @@ USB 工具已接入 `scripts/test_all.sh` 和 `.github/ci/test.sh`；未运行�
 验证补充：Rust 1.98.1 下，nRF52840 BLE ARM release 库检查通过（`vial,storage,nrf52840_ble,embassy-nrf/nrf52840`）。`cargo test` 的 `split,vial,storage,async_matrix,_ble,ext_adv` 在 Windows MSVC debug/release 均因 embassy-crypto 后端未解析符号而链接失败，未运行测试；本机未安装 nextest。完整 CI/格式脚本未运行。日志：`target/merge-host-tests.log`。
 
 nRF52833 DFU 窗口 ARM release 库检查通过：`cargo +1.98.1 check --manifest-path rmk/Cargo.toml --target thumbv7em-none-eabihf --release --no-default-features --features vial,storage,nrf52833_dfu_window`。日志：`target/merge-dfu-check.log`。本次两项 ARM 检查均不含最终固件链接。
+
+## 2026-11-13 上游同步
+
+合入上游 main `708c9ee32f96ac345295819c0925aff2b6a80105`（上次同步点 `6c89c4ba1` 之后的 61 个提交），
+基于本地 `3deb3f16c`。上游的 nRF54 支持照常随入；本分支没有自己的 nRF54 逻辑可清，
+见文首 2026-11-13 条目的核对方式。
+
+冲突只有两处文本冲突，都是模块声明：
+
+- `rmk/src/lib.rs`：同时保留本地 `pub mod receiver;` 和上游新增的 `pub mod sleep;`。
+- `rmk/src/ble/mod.rs`：采用上游的 `join3`（休眠管理器已不在 BLE 任务里），
+  但保留本地原位 pin 的写法；本地那条 `sleep::run_sleep_manager()` 子 future 随之删除。
+
+自动合并看似通过、实际需要人工修的地方，共 4 处；前三处是上游 API 变化，最后一处是语义：
+
+1. `rmk/src/host/via/mod.rs`：休眠超时的读写路径由 `crate::ble::sleep::*` 改为 `crate::sleep::*`。
+2. `rmk/src/receiver/battery_usb.rs`：embassy-usb 把 HID class 搬到 `class::hid::device`，
+   `Config` / `HidReaderWriter` / `State` 改从该模块导入。
+3. `rmk/src/split/driver.rs`：上游把 `PRESSED_KEYS` 与 `release_peripheral_keys` 收进 `_ble` 门控，
+   本地的 6 项断连松键测试和 `TestDriver` 同步加上 `_ble` 门控，否则 `split` 不带 BLE 时编不过。
+4. `rmk/src/sleep.rs`：存储读取补 `_ble` 门控（`SleepTimeout` 记录本身就只在 BLE 下存在），
+   并处理上游两条测试与本地语义的冲突，见下。
+
+**休眠语义保持不变**：`split_central_sleep_timeout_seconds = 0` 只关闭空闲超时，
+主机挂起、广播超时等显式请求仍然休眠。上游原来在 `run_sleep_manager` 里对 0 早退 `pending()`，
+合并后统一走本地的 `timeout_disabled` 状态机，因此上游两条测试需要调整：
+
+- `zero_timeout_disables_idle_sleep_and_requests` 改名为 `zero_timeout_keeps_explicit_sleep_requests`，
+  断言改为“0 不自行超时，但显式请求仍能休眠”。
+- `keyboard_activity_restarts_timeout_and_wakes_from_sleep` 不再额外起第二个
+  `manage_sleep_state(1s)`：`Signal` 只允许一个消费者，两个管理器会互相抢走活动事件；
+  改为直接把运行期超时原子量设为 1 秒，让 `Keyboard::run` 启动的那个管理器来测。
+  生产固件只有一个管理器，这条限制不影响固件。
+
+`docs/docs/main/docs/features/low_power.md` 里“超时 0 同时禁用空闲与显式休眠请求”一句
+与上述实际行为不符，已改为“0 只关闭空闲休眠”，并删掉 fork 段落里重复的一句。
+
+本次合并工作树验证（不是沿用历史结果，Rust stable 1.99.1）：
+
+- `.github/ci/_lib.sh` 的 8 组 featureset `cargo check` 全部通过。
+- `split,vial,storage,async_matrix` 主机 629 项通过（nextest，含 7 项休眠测试）。
+- `examples/use_config/nrf52840_ble` release 完整固件构建通过（ARM 链接，含异步 `Render`）。
+- 含 `_ble` 的 Windows 主机测试仍在链接阶段因 embassy-crypto 后端未解析符号失败，
+  与合并前的同一现象一致，不计为通过；Linux CI 不受影响。
+- 存储格式未变（`SleepTimeout` 仍在枚举末尾，`STORAGE-BASE-COMMIT` 不变），
+  但 embassy 版本、feature 集合变化仍可能触发存储校验清空，消费工程升级前先备份 Vial 配置。
+- 未烧录、未实机验收；`join3` 改造后的栈占用未重新测量。

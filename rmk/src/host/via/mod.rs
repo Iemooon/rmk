@@ -131,8 +131,8 @@ impl<'a> VialService<'a> {
                 #[cfg(feature = "_ble")]
                 if report.output_data[1] == 0xF0 {
                     let seconds = BigEndian::read_u32(&report.output_data[2..6]);
-                    let previous = crate::ble::sleep::sleep_timeout_seconds();
-                    if !crate::ble::sleep::set_sleep_timeout_seconds(seconds) {
+                    let previous = crate::sleep::sleep_timeout_seconds();
+                    if !crate::sleep::set_sleep_timeout_seconds(seconds) {
                         report.input_data[0] = 0xFF;
                     } else {
                         #[cfg(feature = "storage")]
@@ -140,7 +140,7 @@ impl<'a> VialService<'a> {
                             .await
                             .is_err()
                         {
-                            crate::ble::sleep::set_sleep_timeout_seconds(previous);
+                            crate::sleep::set_sleep_timeout_seconds(previous);
                             report.input_data[0] = 0xFF;
                         }
                     }
@@ -158,10 +158,7 @@ impl<'a> VialService<'a> {
             ViaCommand::CustomGetValue => {
                 #[cfg(feature = "_ble")]
                 if report.output_data[1] == 0xF0 {
-                    BigEndian::write_u32(
-                        &mut report.input_data[2..6],
-                        crate::ble::sleep::sleep_timeout_seconds(),
-                    );
+                    BigEndian::write_u32(&mut report.input_data[2..6], crate::sleep::sleep_timeout_seconds());
                 } else {
                     warn!("Custom get value -- unsupported channel");
                 }

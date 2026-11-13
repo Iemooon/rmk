@@ -21,7 +21,7 @@
 | nRF52833 DFU 窗口 | 默认关闭。启用 `nrf52833_dfu_window` 并运行窗口任务后，第 15～50 秒间断电再上电可进入 bootloader；软件 DFU 前先清除并确认持久标记。 | [dfu_window.rs](rmk/src/dfu_window.rs)、[dfu_window/policy.rs](rmk/src/dfu_window/policy.rs)、[boot.rs](rmk/src/boot.rs) |
 | 稳定存储格式基线 | 存储构建自动使用 `STORAGE-BASE-COMMIT` 标识格式，避免普通实现提交导致存储身份变化；格式变化时仍须推进基线。 | [STORAGE-BASE-COMMIT](STORAGE-BASE-COMMIT)、[rmk/build.rs](rmk/build.rs) |
 | BLE future 栈占用优化 | 自动用于 BLE 中央端对应任务组合，原位固定并发子 future，再向 join 传递引用，减少大型临时 future 的搬运。 | [ble/mod.rs](rmk/src/ble/mod.rs) |
-| Vial 休眠时间设置 | 启用 `vial` 和 BLE 芯片 feature 后，可通过自定义通道读写空闲休眠秒数；`0` 关闭空闲超时休眠，`30～3600` 有效。启用 `storage` 时持久保存，无需 Rynk。 | [host/via/mod.rs](rmk/src/host/via/mod.rs)、[ble/sleep.rs](rmk/src/ble/sleep.rs)、[storage/mod.rs](rmk/src/storage/mod.rs) |
+| Vial 休眠时间设置 | 启用 `vial` 和 BLE 芯片 feature 后，可通过自定义通道读写空闲休眠秒数；`0` 关闭空闲超时休眠，`30～3600` 有效。启用 `storage` 时持久保存，无需 Rynk。 | [host/via/mod.rs](rmk/src/host/via/mod.rs)、[sleep.rs](rmk/src/sleep.rs)、[storage/mod.rs](rmk/src/storage/mod.rs) |
 | 显示接收器电量快照 | 提供按需 WBAT v1 查询和接收端状态跟踪，需 `custom_message`；应用显式接入并负责左右电量与断线状态映射。与 EBAT 电压接口独立。 | [battery_snapshot.rs](rmk/src/battery_snapshot.rs)、[battery_snapshot_responder.rs](rmk/src/battery_snapshot_responder.rs) |
 | 显示修饰键事件 | 显示处理器暂存快速修饰键变化直到渲染器读取，不影响 HID 报告；应用渲染器可读取暂存状态。 | [display/mod.rs](rmk/src/display/mod.rs) |
 

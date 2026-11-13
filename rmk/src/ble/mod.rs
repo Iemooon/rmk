@@ -10,9 +10,7 @@ use bt_hci::cmd::le::{
 use bt_hci::cmd::le::{LeRand, LeReadLocalSupportedFeatures, LeSetPhy};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use bt_hci::param::Error as HciError;
-#[cfg(feature = "split")]
-use embassy_futures::join::join3;
-use embassy_futures::join::join4;
+use embassy_futures::join::{join3, join4};
 use embassy_futures::select::{Either, Either3, select, select3};
 #[cfg(feature = "split")]
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -37,12 +35,12 @@ use crate::ble::led::BleLedReader;
 #[cfg(feature = "passkey_entry")]
 use crate::ble::passkey::{PasskeyInputState, next_gatt_event};
 use crate::ble::profile::{BOND_SLOTS, ProfileInfo, ProfileManager};
-use crate::ble::sleep::{report_activity, request_sleep};
 use crate::channel::{BLE_REPORT_CHANNEL, LED_SIGNAL};
 use crate::config::{BleBatteryConfig, DeviceConfig, RmkConfig};
 use crate::core_traits::Runnable;
 use crate::event::SubscribableEvent;
 use crate::hid::{HidWriterTrait, run_led_reader};
+use crate::sleep::{report_activity, request_sleep};
 #[cfg(feature = "split")]
 use crate::split::PeripheralMatrixConfig;
 #[cfg(feature = "split")]
@@ -63,7 +61,6 @@ pub(crate) mod profile;
 pub(crate) mod rng;
 #[cfg(any(feature = "split", feature = "dongle"))]
 pub(crate) mod scan;
-pub(crate) mod sleep;
 
 #[cfg(all(feature = "subrating", feature = "_no_subrating"))]
 compile_error!("You may not enable feature `subrating` on unsupported platforms!");
@@ -330,7 +327,7 @@ impl<
 }
 
 /// Owns the GATT server and the profile manager, and advertises→connects→
-/// serves forever, joined with the stack runner and the sleep manager.
+/// serves forever, joined with the connection loop and the profile manager.
 async fn run_ble_keyboard<
     #[cfg(feature = "host")] 'r,
     C: Controller + ExtAdvCmds + ControllerCmdAsync<LeSetPhy> + ControllerCmdSync<LeReadLocalSupportedFeatures>,
@@ -506,15 +503,11 @@ async fn run_ble_keyboard<
     #[cfg(not(feature = "split"))]
     let event_handler = NoopHandler;
 
-    // The sleep manager lives here because this is the single always-present
-    // BLE task: split or not, connected or not, it keeps running, so the
-    // sleep state can never get stuck.
     // Join references so MaybeDone does not move large connection futures on completion.
     let runner_task = core::pin::pin!(ble_task(runner, &event_handler));
     let connection_loop = core::pin::pin!(connection_loop);
-    let sleep_task = core::pin::pin!(sleep::run_sleep_manager());
     let profile_task = core::pin::pin!(profile_manager.run());
-    join4(runner_task, connection_loop, sleep_task, profile_task).await;
+    join3(runner_task, connection_loop, profile_task).await;
     unreachable!("BleTransport sub-tasks must run forever")
 }
 

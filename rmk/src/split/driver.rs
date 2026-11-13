@@ -164,17 +164,21 @@ mod tests {
     use crate::event::{PeripheralBatteryEvent, SubscribableEvent};
     use crate::split::SplitMessage;
 
+    #[cfg(feature = "_ble")]
     struct TestDriver;
+    #[cfg(feature = "_ble")]
     impl super::SplitReader for TestDriver {
         async fn read(&mut self) -> Result<super::SplitMessage, super::SplitDriverError> {
             core::future::pending().await
         }
     }
+    #[cfg(feature = "_ble")]
     impl super::SplitWriter for TestDriver {
         async fn write(&mut self, _: &super::SplitMessage) -> Result<usize, super::SplitDriverError> {
             Ok(0)
         }
     }
+    #[cfg(feature = "_ble")]
     #[test]
     fn disconnect_publishes_release_at_global_peripheral_coordinates() {
         use embassy_futures::block_on;
@@ -199,6 +203,7 @@ mod tests {
         assert!(super::PRESSED_KEYS.lock(|keys| keys.borrow_mut()[0].pop()).is_none());
     }
 
+    #[cfg(feature = "_ble")]
     #[test]
     fn cancelled_release_keeps_key_for_disconnect_cleanup() {
         use embassy_futures::block_on;
@@ -234,6 +239,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "_ble")]
     #[test]
     fn cancelled_press_does_not_invent_a_key_for_disconnect_cleanup() {
         use embassy_futures::block_on;
@@ -264,6 +270,7 @@ mod tests {
         assert_eq!(super::PRESSED_KEYS.lock(|keys| keys.borrow_mut()[0].pop()), None);
     }
 
+    #[cfg(feature = "_ble")]
     #[test]
     fn disconnect_preserves_local_input_and_does_not_replay_on_reconnect() {
         use embassy_futures::block_on;
@@ -303,6 +310,7 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "_ble")]
     #[test]
     fn disconnect_cleanup_waits_for_backpressure_without_losing_releases() {
         use embassy_futures::{block_on, join::join};
@@ -344,6 +352,7 @@ mod tests {
         assert!(super::PRESSED_KEYS.lock(|keys| keys.borrow_mut()[0].pop()).is_none());
     }
 
+    #[cfg(feature = "_ble")]
     #[test]
     fn invalid_peripheral_coordinates_never_reach_disconnect_cleanup() {
         use embassy_futures::block_on;

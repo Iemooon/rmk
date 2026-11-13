@@ -51,21 +51,26 @@ bind_interrupts!(struct Irqs {
 
 If your firmware already has a `bind_interrupts!` block (for example, for USB), add the EXTI lines to that block instead of declaring a second `Irqs`.
 
-## BLE idle sleep
+## Idle sleep
 
-BLE builds also run an idle sleep manager. Set `split_central_sleep_timeout_seconds` in the `[rmk]` section of `keyboard.toml` (default `0`, disabled) to put the keyboard to sleep after that many seconds without key or pointing activity. Despite the name, it applies to every BLE keyboard, not only split centrals:
+Set `split_central_sleep_timeout_seconds` in the `[rmk]` section of `keyboard.toml` (default `0`, disabled) to put the keyboard to sleep after that many seconds without key or pointing activity. Despite the name, it applies to every keyboard, not only split centrals:
 
 ```toml
 [rmk]
 split_central_sleep_timeout_seconds = 600
 ```
 
-When the keyboard falls asleep, RMK publishes a `SleepStateEvent`, holds battery level reports, and on a split central switches the peripheral links to slower connection parameters. Any key press wakes the keyboard up. The host's HID suspend and exit-suspend commands also put the keyboard to sleep and wake it.
+When the keyboard falls asleep, RMK publishes a `SleepStateEvent`. Display and other device handlers can use this event to save power. Key or pointing activity wakes the keyboard up.
+
+You can call `rmk::sleep::report_activity()` explicitly to wake the keyboard or restart its idle timeout, and `rmk::sleep::request_sleep()` to request immediate sleep. A timeout of `0` disables idle sleep; explicit sleep requests still apply.
+
+### BLE behavior
+
+On BLE keyboards, sleep also holds battery level reports and on a split central switches the peripheral links to slower connection parameters. The BLE host's HID suspend and exit-suspend commands request sleep and wake the keyboard through the same manager.
 
 On the `lemon-nmk` fork, Vial channel `0xF0` can override the idle timeout at runtime
 (`vial` and a BLE chip feature required). Zero disables idle expiry, while runtime
-nonzero values must be 30–3600 seconds. Explicit sleep requests, including HID
-suspend and advertising timeout, still apply at zero. Changes restart the timer
+nonzero values must be 30–3600 seconds. Changes restart the timer
 while awake; a sleeping keyboard waits for activity before applying them.
 With `storage`, a saved timeout overrides the TOML default on startup; without it,
 the setting lasts only until restart. See the [fork protocol documentation](https://github.com/Iemooon/rmk/blob/lemon-nmk/README.md#vial-休眠时间设置).

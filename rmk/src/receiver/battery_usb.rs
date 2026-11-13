@@ -1,7 +1,10 @@
 //! Independent vendor HID, leaving Vial and keyboard traffic on their own endpoints.
 use embassy_usb::{
     Builder,
-    class::hid::{Config, HidBootProtocol, HidReaderWriter, HidSubclass, State},
+    class::hid::{
+        HidBootProtocol, HidSubclass,
+        device::{Config, HidReaderWriter, State},
+    },
     driver::Driver,
 };
 use static_cell::StaticCell;

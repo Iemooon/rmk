@@ -1,6 +1,26 @@
-Base: rmk-rs/rmk bba0f24bf59e142f684c38c37193ae5a45653e9d
+Base: rmk-rs/rmk 708c9ee32f96ac345295819c0925aff2b6a80105
 
 Maintained feature index (Chinese): [LEMON-NMK-FEATURES.md](LEMON-NMK-FEATURES.md).
+
+2026-11-13: Merged upstream main `708c9ee32` (61 commits since `6c89c4ba1`).
+This branch carries no nRF54 code of its own: the nRF54LM20/L15 features, watchdog
+gating, the two `use_rust/nrf54*` examples and the CI skiplist entry all come from
+upstream, and `git diff upstream/main..HEAD` contains no nRF54 lines. The earlier
+nRF54 experiment was reverted in `a7723b2c7`; both nRF54 example directories are now
+byte-identical to upstream.
+Upstream moved the sleep manager from `rmk/src/ble/sleep.rs` to `rmk/src/sleep.rs` and
+starts it from `Keyboard::run`, so the BLE task is back to `join3`; the local pinned-future
+stack fix is kept, but its 14272-byte measurement predates this merge. The local runtime
+sleep timeout, its `TIMEOUT_CHANGED` signal and the stored SleepTimeout still work; a zero
+timeout keeps disabling idle expiry only, so explicit sleep requests still apply — that is
+why upstream's two zero-timeout tests were adjusted instead of adopting its early
+`pending()` return. Upstream also moved the embassy-usb HID classes to `class::hid::device`,
+made `Render` async and added 21 keycodes; local call sites were updated accordingly.
+`SleepTimeout` stays at the end of the storage enums, so STORAGE-BASE-COMMIT is retained.
+Host `cargo check` passed for all 8 featuresets; `split,vial,storage,async_matrix` ran 629
+nextest tests green; the nRF52840 BLE release firmware built and linked. BLE host tests on
+Windows still fail at link time on the pre-existing embassy-crypto backend symbols. Nothing
+was flashed and no hardware acceptance was performed; details in LEMON-NMK-FEATURES.md.
 
 2026-11-07: Without BLE, Vial channel 0xF0 get/set requests now return 0xFF
 instead of echoing a successful-looking response. Other channels are unchanged.
