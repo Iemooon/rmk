@@ -65,5 +65,6 @@
 - [完整特性、源码入口与验证记录](LEMON-NMK-FEATURES.md)
 - [nRF52833 DFU 接入](LEMON-NMK-DFU.md)
 - [接收队列、A/B 切换和电压接口接入](LEMON-NMK-RECEIVER.md)
+- [休眠超时语义分叉与上游合并手册](LEMON-NMK-SLEEP.md)
 - [Gazell 构建依赖与许可证](rmk-gazell/README.md)
 - [补丁归属与上游同步记录](LOCAL-PATCHES.md)

@@ -246,7 +246,8 @@ USB 工具已接入 `scripts/test_all.sh` 和 `.github/ci/test.sh`；未运行�
 每次修改本分支时，在同一提交或同一 PR 中完成：
 
 1. 更新本文的特性、适用芯片、默认状态、接口及源码入口；删除特性也要记录。
-2. 对 DFU 行为修改同步更新 `LEMON-NMK-DFU.md`；对上游基线或补丁归属修改同步更新 `LOCAL-PATCHES.md`。
+2. 对 DFU 行为修改同步更新 `LEMON-NMK-DFU.md`；对上游基线或补丁归属修改同步更新 `LOCAL-PATCHES.md`；
+   合并上游前先按 `LEMON-NMK-SLEEP.md` 核对 `rmk/src/sleep.rs` 的休眠语义分叉。
 3. 检查持久格式和 feature 是否影响旧设置，写清迁移结果；必要时推进存储基线。
 4. 运行与改动相关的测试，记录代码版本、命令、结果；未做的硬件验收写明待验证。
 5. 同步上游时逐项核对此表，避免重复补丁或被新 API 替换后遗漏行为。
@@ -318,6 +319,11 @@ nRF52833 DFU 窗口 ARM release 库检查通过：`cargo +1.98.1 check --manifes
 
 `docs/docs/main/docs/features/low_power.md` 里“超时 0 同时禁用空闲与显式休眠请求”一句
 与上述实际行为不符，已改为“0 只关闭空闲休眠”，并删掉 fork 段落里重复的一句。
+`rmk/src/sleep.rs` 的 `run_sleep_manager` 文档注释同样留着上游的旧描述（“0 同时禁用自动
+与显式休眠”），一并对齐到实际实现，并补上运行期改回非 0 不需要重启这一点。
+
+这项语义分叉是 fork 里唯一的“行为语义”差异，合并时怎么保住它、怎么确认没被静默丢掉，
+写在 [LEMON-NMK-SLEEP.md](LEMON-NMK-SLEEP.md)。
 
 本次合并工作树验证（不是沿用历史结果，Rust stable 1.99.1）：
 

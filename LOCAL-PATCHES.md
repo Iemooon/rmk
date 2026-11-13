@@ -14,7 +14,9 @@ stack fix is kept, but its 14272-byte measurement predates this merge. The local
 sleep timeout, its `TIMEOUT_CHANGED` signal and the stored SleepTimeout still work; a zero
 timeout keeps disabling idle expiry only, so explicit sleep requests still apply — that is
 why upstream's two zero-timeout tests were adjusted instead of adopting its early
-`pending()` return. Upstream also moved the embassy-usb HID classes to `class::hid::device`,
+`pending()` return. This is the branch's only deliberate behavioural divergence;
+how to keep it alive across upstream changes is documented in
+[LEMON-NMK-SLEEP.md](LEMON-NMK-SLEEP.md). Upstream also moved the embassy-usb HID classes to `class::hid::device`,
 made `Render` async and added 21 keycodes; local call sites were updated accordingly.
 `SleepTimeout` stays at the end of the storage enums, so STORAGE-BASE-COMMIT is retained.
 Host `cargo check` passed for all 8 featuresets; `split,vial,storage,async_matrix` ran 629

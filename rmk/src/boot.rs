@@ -105,7 +105,6 @@ pub(crate) fn reboot_keyboard() {
     esp_hal::system::software_reset();
 }
 
-
 #[cfg(all(test, feature = "storage"))]
 mod tests {
     #[test]

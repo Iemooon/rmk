@@ -60,8 +60,11 @@ pub fn request_sleep() {
 /// Started by `Keyboard::run` on a unibody or split central. Split peripherals
 /// follow the central's sleep events instead.
 ///
-/// When `split_central_sleep_timeout_seconds` is 0 (the default), both automatic
-/// sleep and explicit sleep requests are disabled.
+/// A timeout of 0 (the default) disables idle expiry only: explicit requests,
+/// such as the host suspending us or advertising timing out, still sleep the
+/// keyboard. The timeout may also change at runtime through Vial channel `0xF0`;
+/// the value can go back to non-zero without a restart because the disabled
+/// branch keeps listening for `TIMEOUT_CHANGED`.
 pub(crate) async fn run_sleep_manager() {
     // Only stored when Vial can configure it, which needs BLE.
     #[cfg(all(feature = "storage", feature = "_ble"))]
